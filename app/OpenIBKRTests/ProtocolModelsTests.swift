@@ -2,6 +2,27 @@ import XCTest
 @testable import OpenIBKR
 
 final class ProtocolModelsTests: XCTestCase {
+    @MainActor
+    func testFloatingPanelResizesHorizontallyButKeepsFixedHeight() throws {
+        let controller = FloatingPanelController(model: AppModel())
+        let window = try XCTUnwrap(controller.window)
+        XCTAssertFalse(window.hasShadow)
+
+        let narrow = controller.windowWillResize(
+            window,
+            to: NSSize(width: DashboardLayout.minimumWidth - 80, height: 200)
+        )
+        let wide = controller.windowWillResize(
+            window,
+            to: NSSize(width: DashboardLayout.maximumWidth + 80, height: 900)
+        )
+
+        XCTAssertEqual(narrow.width, DashboardLayout.minimumWidth)
+        XCTAssertEqual(wide.width, DashboardLayout.maximumWidth)
+        XCTAssertEqual(narrow.height, wide.height)
+        XCTAssertEqual(window.contentMinSize.height, window.contentMaxSize.height)
+    }
+
     func testDecodesPythonSnapshotFixture() throws {
         let json = #"""
         {
