@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openibkr.local/protocol/v1/messages.schema.json",
+  "title": "OpenIBKR stream envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "protocol_version", "sequence", "sent_at", "payload"],
+  "properties": {
+    "type": {
+      "enum": ["snapshot", "update"]
+    },
+    "protocol_version": {
+      "const": 1
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "sent_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "type": "object"
+    }
+  }
+}
