@@ -4,11 +4,12 @@ import asyncio
 import tempfile
 import unittest
 from datetime import timedelta
+from decimal import Decimal
 from pathlib import Path
 
 from openibkr_helper.adapters.fake import FakeIBKRAdapter
 from openibkr_helper.config import HelperSettings
-from openibkr_helper.events import ConnectionEvent
+from openibkr_helper.events import ConnectionEvent, QuoteEvent, QuoteResetEvent
 from openibkr_helper.models import ContractQuery, GatewayState, utc_now
 from openibkr_helper.service import HelperService, WatchlistFullError
 
@@ -88,6 +89,31 @@ class HelperServiceTests(unittest.IsolatedAsyncioTestCase):
         snapshot = await self.service.snapshot()
         self.assertTrue(snapshot.pnl.stale)
         self.assertTrue(snapshot.quotes[0].stale)
+
+    async def test_invalid_price_does_not_overwrite_last_valid_quote(self) -> None:
+        instrument = await self.service.add_watchlist(ContractQuery(symbol="AAPL"))
+        await asyncio.sleep(0)
+        before = (await self.service.snapshot()).quotes[0]
+
+        await self.service.handle_adapter_event(QuoteEvent(instrument.con_id, "last", Decimal("0")))
+        after = (await self.service.snapshot()).quotes[0]
+
+        self.assertEqual(after.last, before.last)
+        self.assertEqual(after.received_at, before.received_at)
+
+    async def test_fresh_subscription_resets_cached_quote(self) -> None:
+        instrument = await self.service.add_watchlist(ContractQuery(symbol="AAPL"))
+        await asyncio.sleep(0)
+
+        await self.service.handle_adapter_event(QuoteResetEvent(instrument.con_id))
+        quote = (await self.service.snapshot()).quotes[0]
+
+        self.assertIsNone(quote.bid)
+        self.assertIsNone(quote.ask)
+        self.assertIsNone(quote.last)
+        self.assertIsNone(quote.close)
+        self.assertIsNone(quote.received_at)
+        self.assertTrue(quote.stale)
 
     async def test_watchlist_restores_after_service_restart(self) -> None:
         instrument = await self.service.add_watchlist(ContractQuery(symbol="AAPL"))

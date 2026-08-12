@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import Mock
 
 from ibapi.message import OUT
 from openibkr_helper.adapters.live import LiveIBKRAdapter, _HelperIBKRClient
 from openibkr_helper.config import HelperSettings
+from openibkr_helper.events import QuoteEvent
 from openibkr_spike.readonly_client import ReadOnlyIBKRClient, TradingDisabledError
 
 
@@ -67,6 +69,27 @@ class LiveAdapterGuardTests(unittest.TestCase):
             self.assertEqual(
                 adapter.emit_from_thread.call_args.args[0].state.value,
                 "disconnected",
+            )
+
+    def test_zero_and_negative_price_ticks_are_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = HelperSettings(
+                session_token="price-filter-test-token-at-least-32-characters",
+                database_path=Path(directory) / "db.sqlite3",
+                adapter="ibkr",
+            )
+            adapter = LiveIBKRAdapter(settings)
+            adapter.emit_from_thread = Mock()
+            client = _HelperIBKRClient(adapter)
+            client.market_requests[17] = 270639
+
+            client.tickPrice(17, 68, 0.0, Mock())
+            client.tickPrice(17, 68, -1.0, Mock())
+            adapter.emit_from_thread.assert_not_called()
+
+            client.tickPrice(17, 68, 98.75, Mock())
+            adapter.emit_from_thread.assert_called_once_with(
+                QuoteEvent(270639, "last", Decimal("98.75"))
             )
 
 

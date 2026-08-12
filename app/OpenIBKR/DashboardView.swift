@@ -164,7 +164,7 @@ struct DashboardView: View {
             Spacer(minLength: 12)
 
             VStack(alignment: .trailing, spacing: 2) {
-                Text(price(quote.last ?? quote.close))
+                Text(price(quote.displayPrice))
                     .font(.system(.body, design: .rounded, weight: .medium))
                     .monospacedDigit()
                     .lineLimit(1)
@@ -317,13 +317,7 @@ struct DashboardView: View {
     }
 
     private func changeText(_ quote: QuoteSnapshot) -> String {
-        guard
-            let last = quote.last?.value,
-            let close = quote.close?.value,
-            close != 0
-        else { return "—" }
-        let change = last - close
-        let percent = change / close * 100
+        guard let (change, percent) = quote.priceChange else { return "—" }
         let sign = change > 0 ? "+" : ""
         return "\(sign)\(decimal(change, places: 2))  \(sign)\(decimal(percent, places: 2))%"
     }
@@ -338,15 +332,15 @@ struct DashboardView: View {
     }
 
     private func changeColor(_ quote: QuoteSnapshot) -> Color {
-        guard let last = quote.last?.value, let close = quote.close?.value else { return .secondary }
-        if last > close { return .green }
-        if last < close { return .red }
+        guard let change = quote.priceChange?.absolute else { return .secondary }
+        if change > 0 { return .green }
+        if change < 0 { return .red }
         return .secondary
     }
 
     private func quoteAccessibilityLabel(_ quote: QuoteSnapshot) -> String {
         let stale = quote.stale ? "，数据已过期" : ""
-        return "\(quote.instrument.symbol)，价格 \(price(quote.last ?? quote.close))，\(changeText(quote))，\(quote.marketDataKind.displayName)行情\(stale)"
+        return "\(quote.instrument.symbol)，价格 \(price(quote.displayPrice))，\(changeText(quote))，\(quote.marketDataKind.displayName)行情\(stale)"
     }
 
     private func pnlColor(_ value: DecimalString?) -> Color {

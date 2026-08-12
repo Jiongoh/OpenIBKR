@@ -37,6 +37,13 @@ class QuoteEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class QuoteResetEvent:
+    """Clear cached prices immediately before starting a fresh subscription."""
+
+    con_id: int
+
+
+@dataclass(frozen=True, slots=True)
 class MarketDataTypeEvent:
     con_id: int
     kind: MarketDataKind
@@ -52,6 +59,7 @@ AdapterEvent = (
     | AccountEvent
     | PnLEvent
     | QuoteEvent
+    | QuoteResetEvent
     | MarketDataTypeEvent
     | InstrumentResolvedEvent
 )

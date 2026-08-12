@@ -14,6 +14,7 @@ from .events import (
     MarketDataTypeEvent,
     PnLEvent,
     QuoteEvent,
+    QuoteResetEvent,
 )
 from .models import (
     AccountSnapshot,
@@ -120,13 +121,29 @@ class SnapshotStore:
                 kind, data = "market_data_type", quote
             elif isinstance(event, QuoteEvent):
                 quote = self._quotes.get(event.con_id)
-                if quote is None:
+                if quote is None or event.value <= 0:
                     return
                 quote = quote.model_copy(
                     update={event.field: event.value, "received_at": now, "stale": False}
                 )
                 self._quotes[event.con_id] = quote
                 kind, data = "quote", quote
+            elif isinstance(event, QuoteResetEvent):
+                quote = self._quotes.get(event.con_id)
+                if quote is None:
+                    return
+                quote = quote.model_copy(
+                    update={
+                        "bid": None,
+                        "ask": None,
+                        "last": None,
+                        "close": None,
+                        "received_at": None,
+                        "stale": True,
+                    }
+                )
+                self._quotes[event.con_id] = quote
+                kind, data = "quote_reset", quote
             else:
                 raise TypeError(f"Unsupported adapter event: {type(event)!r}")
             await self._publish_unlocked(kind, data)

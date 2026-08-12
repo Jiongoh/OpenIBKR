@@ -18,6 +18,7 @@ from ..events import (
     MarketDataTypeEvent,
     PnLEvent,
     QuoteEvent,
+    QuoteResetEvent,
 )
 from ..models import ContractQuery, GatewayState, Instrument, MarketDataKind
 from .base import AdapterUnavailableError, ContractResolutionError, EventSink
@@ -117,7 +118,7 @@ class _HelperIBKRClient(ReadOnlyIBKRClient):
         super().tickPrice(reqId, tickType, price, attrib)
         con_id = self.market_requests.get(reqId)
         value = _decimal(price)
-        if con_id is None or value is None or value < 0:
+        if con_id is None or value is None or value <= 0:
             return
         field = {
             1: "bid",
@@ -247,6 +248,8 @@ class LiveIBKRAdapter:
             # Keep the desired set in memory.  The reconnect cycle restores it
             # once the Gateway becomes available.
             return
+        if self._sink is not None:
+            await self._sink(QuoteResetEvent(instrument.con_id))
         request_id = self._next_market_request
         self._next_market_request += 1
         contract = Contract()

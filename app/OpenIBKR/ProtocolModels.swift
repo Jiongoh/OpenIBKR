@@ -35,6 +35,10 @@ enum MarketDataKind: String, Codable {
 struct DecimalString: Codable, Hashable {
     let value: Decimal
 
+    init(_ value: Decimal) {
+        self.value = value
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         if let text = try? container.decode(String.self), let decimal = Decimal(string: text) {
@@ -103,6 +107,26 @@ struct QuoteSnapshot: Codable, Identifiable {
     var stale: Bool
 
     var id: Int { instrument.conId }
+
+    var validLast: DecimalString? {
+        guard let last, last.value > 0 else { return nil }
+        return last
+    }
+
+    var validClose: DecimalString? {
+        guard let close, close.value > 0 else { return nil }
+        return close
+    }
+
+    var displayPrice: DecimalString? {
+        validLast ?? validClose
+    }
+
+    var priceChange: (absolute: Decimal, percent: Decimal)? {
+        guard let last = validLast?.value, let close = validClose?.value else { return nil }
+        let absolute = last - close
+        return (absolute, absolute / close * 100)
+    }
 }
 
 struct AppSnapshot: Codable {
