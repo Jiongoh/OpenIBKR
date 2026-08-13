@@ -3,25 +3,12 @@ import XCTest
 
 final class ProtocolModelsTests: XCTestCase {
     @MainActor
-    func testFloatingPanelResizesHorizontallyButKeepsFixedHeight() throws {
+    func testFloatingPanelAdaptsToContentAndDisablesBackgroundDragging() throws {
         let controller = FloatingPanelController(model: AppModel())
         let window = try XCTUnwrap(controller.window)
         XCTAssertFalse(window.hasShadow)
-
-        let narrow = controller.windowWillResize(
-            window,
-            to: NSSize(width: DashboardLayout.minimumWidth - 80, height: 200)
-        )
-        let wide = controller.windowWillResize(
-            window,
-            to: NSSize(width: DashboardLayout.maximumWidth + 80, height: 900)
-        )
-
-        XCTAssertEqual(narrow.width, DashboardLayout.minimumWidth)
-        XCTAssertEqual(wide.width, DashboardLayout.maximumWidth)
-        XCTAssertEqual(narrow.height, wide.height)
-        XCTAssertEqual(window.contentMinSize.height, DashboardLayout.collapsedContentHeight)
-        XCTAssertEqual(window.contentMaxSize.height, DashboardLayout.contentHeight)
+        XCTAssertFalse(window.isMovableByWindowBackground)
+        XCTAssertFalse(window.styleMask.contains(.resizable))
     }
 
     @MainActor
@@ -29,26 +16,83 @@ final class ProtocolModelsTests: XCTestCase {
         let original = NSRect(x: 120, y: 300, width: 388, height: 100)
         let expanded = FloatingPanelController.frameKeepingTopLeft(
             original,
-            targetHeight: 396
+            targetSize: NSSize(width: 267, height: 396)
         )
 
         XCTAssertEqual(expanded.minX, original.minX)
         XCTAssertEqual(expanded.maxY, original.maxY)
-        XCTAssertEqual(expanded.width, original.width)
+        XCTAssertEqual(expanded.width, 267)
         XCTAssertEqual(expanded.height, 396)
     }
 
     func testPnLAndWatchlistUseIdenticalWidths() {
-        let totalWidth: CGFloat = 364
-
         XCTAssertEqual(
-            DashboardLayout.moduleWidth(totalWidth: totalWidth, expanded: false),
+            DashboardLayout.moduleWidth(expanded: false),
             DashboardLayout.collapsedPnLWidth
         )
         XCTAssertEqual(
-            DashboardLayout.moduleWidth(totalWidth: totalWidth, expanded: true),
-            (totalWidth - DashboardLayout.watchlistAccessoryWidth)
-                * DashboardLayout.expandedPnLWidthRatio
+            DashboardLayout.moduleWidth(expanded: true),
+            DashboardLayout.expandedModuleWidth
+        )
+    }
+
+    func testDailyPnLPercentageCannotHitFirstQuote() {
+        let percentagePoint = CGPoint(x: 24, y: 42)
+
+        XCTAssertTrue(
+            DashboardLayout.pnlHoverFrame(expanded: false).contains(percentagePoint)
+        )
+        XCTAssertFalse(
+            DashboardLayout.quoteHoverFrame(index: 0, expanded: false)
+                .contains(percentagePoint)
+        )
+    }
+
+    func testModuleAndQuoteGapsDoNotHitCards() {
+        let moduleGap = CGPoint(x: 24, y: DashboardLayout.pnlHeight + 5)
+        let firstQuoteGap = CGPoint(
+            x: 24,
+            y: DashboardLayout.pnlHeight + DashboardLayout.moduleSpacing + 10 + 51
+        )
+
+        XCTAssertFalse(DashboardLayout.pnlHoverFrame(expanded: false).contains(moduleGap))
+        XCTAssertFalse(
+            DashboardLayout.quoteHoverFrame(index: 0, expanded: false).contains(moduleGap)
+        )
+        XCTAssertFalse(
+            DashboardLayout.quoteHoverFrame(index: 0, expanded: false)
+                .contains(firstQuoteGap)
+        )
+        XCTAssertFalse(
+            DashboardLayout.quoteHoverFrame(index: 1, expanded: false)
+                .contains(firstQuoteGap)
+        )
+    }
+
+    func testHoverSessionUsesOneStableWidthAcrossModules() {
+        let stableWidth = DashboardLayout.stableHoverWidth(
+            watchlistExpanded: true,
+            hasAccessory: true
+        )
+
+        XCTAssertEqual(
+            stableWidth,
+            DashboardLayout.expandedModuleWidth + DashboardLayout.watchlistAccessoryWidth
+        )
+        XCTAssertGreaterThan(stableWidth, DashboardLayout.expandedModuleWidth)
+    }
+
+    func testPnLDragSurfaceLeavesOnlyButtonAreaInteractive() {
+        let collapsedDragWidth = DashboardLayout.moduleWidth(expanded: false)
+            - DashboardLayout.pnlDragButtonExclusionWidth
+        let expandedDragWidth = DashboardLayout.moduleWidth(expanded: true)
+            - DashboardLayout.pnlDragButtonExclusionWidth
+
+        XCTAssertGreaterThan(collapsedDragWidth, 0)
+        XCTAssertGreaterThan(expandedDragWidth, collapsedDragWidth)
+        XCTAssertLessThan(
+            DashboardLayout.pnlDragButtonExclusionWidth,
+            DashboardLayout.moduleWidth(expanded: false)
         )
     }
 
