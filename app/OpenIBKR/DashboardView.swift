@@ -277,12 +277,21 @@ struct DashboardView: View {
     }
 
     private func updateHoverTargets(at location: CGPoint) {
+        let startedHoverSession = !hoverSessionTargetActive
         if !hoverSessionTargetActive {
             hoverSessionTargetActive = true
             hoverSessionGeneration += 1
-            usesStableHoverWidth = true
+            // Give NSPanel one layout pass to establish the full interaction
+            // envelope before a card begins animating into that space. The
+            // size callback is intentionally deferred by one main-actor turn,
+            // so starting both at once briefly rendered the first P&L
+            // expansion inside the old collapsed window.
+            withTransaction(Transaction(animation: nil)) {
+                usesStableHoverWidth = true
+            }
         }
         setInterfaceHovered(true)
+        guard !startedHoverSession else { return }
         setPnLHovered(
             DashboardLayout.pnlHoverFrame(expanded: isPnLExpanded).contains(location)
         )
