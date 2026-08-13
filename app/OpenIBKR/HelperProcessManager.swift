@@ -41,11 +41,11 @@ enum HelperProcessError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .executableMissing: "应用中未找到 Helper 可执行文件"
-        case let .launchFailed(message): "Helper 启动失败：\(message)"
-        case .handshakeTimeout: "Helper 启动握手超时"
-        case .invalidHandshake: "Helper 返回了无效的启动握手"
-        case let .unexpectedExit(status): "Helper 意外退出（状态码 \(status)）"
+        case .executableMissing: "The Helper executable is missing from the app"
+        case let .launchFailed(message): "Failed to launch Helper: \(message)"
+        case .handshakeTimeout: "Timed out waiting for the Helper startup handshake"
+        case .invalidHandshake: "The Helper returned an invalid startup handshake"
+        case let .unexpectedExit(status): "The Helper exited unexpectedly (status \(status))"
         }
     }
 }
@@ -70,7 +70,7 @@ final class HelperProcessManager {
 
     func start(adapter: String, gatewayPort: Int) async throws -> HelperEndpoint {
         if let process, process.isRunning {
-            throw HelperProcessError.launchFailed("已有 Helper 正在运行")
+            throw HelperProcessError.launchFailed("Another Helper instance is already running")
         }
         let executable = try helperExecutableURL()
         let token = try Self.makeSessionToken()
@@ -211,7 +211,7 @@ final class HelperProcessManager {
     private static func makeSessionToken() throws -> String {
         var bytes = [UInt8](repeating: 0, count: 32)
         guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
-            throw HelperProcessError.launchFailed("无法生成安全会话令牌")
+            throw HelperProcessError.launchFailed("Unable to generate a secure session token")
         }
         return Data(bytes).base64EncodedString()
     }

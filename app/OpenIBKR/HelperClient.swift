@@ -20,14 +20,22 @@ struct HelperEndpoint {
 
 enum HelperClientError: LocalizedError {
     case invalidResponse
-    case http(Int)
+    case http(Int, String?)
     case incompatibleProtocol(Int)
 
     var errorDescription: String? {
         switch self {
-        case .invalidResponse: "Helper 返回无效响应"
-        case let .http(code): "Helper HTTP 错误 \(code)"
-        case let .incompatibleProtocol(version): "Helper 协议版本 \(version) 不受支持"
+        case .invalidResponse: "The Helper returned an invalid response"
+        case let .http(code, detail):
+            switch code {
+            case 401: "Local Helper authentication failed. Please restart OpenIBKR"
+            case 409: "The watchlist has reached its maximum size"
+            case 422: "The stock symbol or selected contract is invalid. Please check it and try again"
+            case 503: "IB Gateway is unavailable. Make sure it is logged in and API access is enabled"
+            case 504: "The IB Gateway contract lookup timed out. Please try again"
+            default: detail ?? "Helper HTTP error \(code)"
+            }
+        case let .incompatibleProtocol(version): "Helper protocol version \(version) is not supported"
         }
     }
 }
@@ -102,7 +110,26 @@ struct HelperClient {
         if body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw HelperClientError.invalidResponse }
-        guard (200..<300).contains(http.statusCode) else { throw HelperClientError.http(http.statusCode) }
+        guard (200..<300).contains(http.statusCode) else {
+            throw HelperClientError.http(http.statusCode, Self.errorDetail(from: data))
+        }
         return data
+    }
+
+    private static func errorDetail(from data: Data) -> String? {
+        guard
+            let object = try? JSONSerialization.jsonObject(with: data),
+            let dictionary = object as? [String: Any],
+            let detail = dictionary["detail"]
+        else { return nil }
+
+        if let message = detail as? String, !message.isEmpty {
+            return message
+        }
+        if let validationIssues = detail as? [[String: Any]] {
+            let messages = validationIssues.compactMap { $0["msg"] as? String }
+            return messages.isEmpty ? nil : messages.joined(separator: "；")
+        }
+        return nil
     }
 }

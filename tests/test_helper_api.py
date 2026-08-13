@@ -113,6 +113,19 @@ class HelperAPITests(unittest.TestCase):
         rejected = self.client.post("/v1/watchlist/instrument", json=forged, headers=self.headers)
         self.assertEqual(rejected.status_code, 422)
 
+    def test_missing_and_invalid_symbols_return_actionable_results(self) -> None:
+        missing = self.client.post(
+            "/v1/contracts/search", json={"symbol": "MISSING"}, headers=self.headers
+        )
+        self.assertEqual(missing.status_code, 200)
+        self.assertEqual(missing.json(), [])
+
+        invalid = self.client.post(
+            "/v1/contracts/search", json={"symbol": "AAPL;DROP"}, headers=self.headers
+        )
+        self.assertEqual(invalid.status_code, 422)
+        self.assertIn("detail", invalid.json())
+
 
 if __name__ == "__main__":
     unittest.main()

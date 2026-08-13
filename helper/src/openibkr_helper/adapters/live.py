@@ -158,6 +158,13 @@ class _HelperIBKRClient(ReadOnlyIBKRClient):
         elif errorCode == 1300:
             self._emit(ConnectionEvent(GatewayState.DISCONNECTED, errorCode))
             self._adapter.disconnected_from_thread()
+        elif errorCode == 200:
+            # IBKR uses error 200 when no security definition matches a
+            # contract query. Resolve the pending search immediately as an
+            # empty result instead of leaving the UI waiting for its timeout.
+            self._adapter.complete_contract_from_thread(reqId, ())
+        elif errorCode in {320, 321, 322}:
+            self._adapter.reject_contract_from_thread(reqId, errorCode)
 
     def connectionClosed(self) -> None:  # noqa: N802
         super().connectionClosed()
@@ -302,6 +309,22 @@ class LiveIBKRAdapter:
                 future.set_result(candidates)
 
         loop.call_soon_threadsafe(complete)
+
+    def reject_contract_from_thread(self, request_id: int, error_code: int) -> None:
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+
+        def reject() -> None:
+            future = self._contract_futures.get(request_id)
+            if future is not None and not future.done():
+                future.set_exception(
+                    ContractResolutionError(
+                        f"IB Gateway rejected the contract query (code {error_code})"
+                    )
+                )
+
+        loop.call_soon_threadsafe(reject)
 
     async def _connect_once(self) -> None:
         self._disconnected.clear()

@@ -4,7 +4,7 @@ import SwiftUI
 @MainActor
 final class FloatingPanelController: NSWindowController, NSWindowDelegate {
     private static let frameName = "OpenIBKR.FloatingPanel"
-    private let fixedFrameHeight: CGFloat
+    private var lockedFrameHeight: CGFloat
 
     init(model: AppModel) {
         let panel = NSPanel(
@@ -18,7 +18,7 @@ final class FloatingPanelController: NSWindowController, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        fixedFrameHeight = panel.frameRect(
+        lockedFrameHeight = panel.frameRect(
             forContentRect: NSRect(
                 x: 0,
                 y: 0,
@@ -39,14 +39,22 @@ final class FloatingPanelController: NSWindowController, NSWindowDelegate {
         panel.isReleasedWhenClosed = false
         panel.contentMinSize = NSSize(
             width: DashboardLayout.minimumWidth,
-            height: DashboardLayout.contentHeight
+            height: DashboardLayout.collapsedContentHeight
         )
         panel.contentMaxSize = NSSize(
             width: DashboardLayout.maximumWidth,
             height: DashboardLayout.contentHeight
         )
-        panel.minSize = NSSize(width: DashboardLayout.minimumWidth, height: fixedFrameHeight)
-        panel.maxSize = NSSize(width: DashboardLayout.maximumWidth, height: fixedFrameHeight)
+        let collapsedFrameHeight = panel.frameRect(
+            forContentRect: NSRect(
+                x: 0,
+                y: 0,
+                width: DashboardLayout.defaultWidth,
+                height: DashboardLayout.collapsedContentHeight
+            )
+        ).height
+        panel.minSize = NSSize(width: DashboardLayout.minimumWidth, height: collapsedFrameHeight)
+        panel.maxSize = NSSize(width: DashboardLayout.maximumWidth, height: lockedFrameHeight)
         for buttonType in [
             NSWindow.ButtonType.closeButton,
             .miniaturizeButton,
@@ -54,7 +62,17 @@ final class FloatingPanelController: NSWindowController, NSWindowDelegate {
         ] {
             panel.standardWindowButton(buttonType)?.isHidden = true
         }
-        let hostingView = NSHostingView(rootView: DashboardView(model: model))
+        super.init(window: panel)
+        panel.delegate = self
+
+        let hostingView = NSHostingView(
+            rootView: DashboardView(
+                model: model,
+                onWatchlistExpansionChanged: { [weak self] expanded in
+                    self?.setWatchlistExpanded(expanded)
+                }
+            )
+        )
         hostingView.wantsLayer = true
         hostingView.layer?.backgroundColor = NSColor.clear.cgColor
         panel.contentView = hostingView
@@ -72,8 +90,6 @@ final class FloatingPanelController: NSWindowController, NSWindowDelegate {
                 height: DashboardLayout.contentHeight
             )
         )
-        super.init(window: panel)
-        panel.delegate = self
         moveToVisibleScreenIfNeeded()
     }
 
@@ -95,7 +111,44 @@ final class FloatingPanelController: NSWindowController, NSWindowDelegate {
                 max(frameSize.width, DashboardLayout.minimumWidth),
                 DashboardLayout.maximumWidth
             ),
-            height: fixedFrameHeight
+            height: lockedFrameHeight
+        )
+    }
+
+    private func setWatchlistExpanded(_ expanded: Bool) {
+        guard let panel = window else { return }
+        let contentHeight = expanded
+            ? DashboardLayout.contentHeight
+            : DashboardLayout.collapsedContentHeight
+        let targetFrameHeight = panel.frameRect(
+            forContentRect: NSRect(
+                x: 0,
+                y: 0,
+                width: panel.contentView?.frame.width ?? DashboardLayout.defaultWidth,
+                height: contentHeight
+            )
+        ).height
+
+        lockedFrameHeight = targetFrameHeight
+        let targetFrame = Self.frameKeepingTopLeft(
+            panel.frame,
+            targetHeight: targetFrameHeight
+        )
+
+        // NSWindow frame animation interpolates the entire hosted layer even
+        // when the top edge is mathematically fixed. That makes the P&L card
+        // appear to slide before the watchlist opens. Resize the transparent
+        // panel immediately and leave all visible motion to SwiftUI's
+        // watchlist/row transitions.
+        panel.setFrame(targetFrame, display: true, animate: false)
+    }
+
+    static func frameKeepingTopLeft(_ frame: NSRect, targetHeight: CGFloat) -> NSRect {
+        NSRect(
+            x: frame.minX,
+            y: frame.maxY - targetHeight,
+            width: frame.width,
+            height: targetHeight
         )
     }
 

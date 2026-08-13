@@ -77,6 +77,12 @@ def create_app(service: HelperService) -> FastAPI:
             return await service.search_contracts(query)
         except AdapterUnavailableError as exc:
             raise HTTPException(status_code=503, detail="IB Gateway unavailable") from exc
+        except ContractResolutionError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except TimeoutError as exc:
+            raise HTTPException(
+                status_code=504, detail="IB Gateway contract search timed out"
+            ) from exc
 
     @app.post(
         "/v1/watchlist/instrument",

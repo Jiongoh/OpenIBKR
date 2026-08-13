@@ -71,6 +71,24 @@ class LiveAdapterGuardTests(unittest.TestCase):
                 "disconnected",
             )
 
+    def test_contract_errors_finish_pending_search_without_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = HelperSettings(
+                session_token="contract-error-test-token-at-least-32-characters",
+                database_path=Path(directory) / "db.sqlite3",
+                adapter="ibkr",
+            )
+            adapter = LiveIBKRAdapter(settings)
+            adapter.complete_contract_from_thread = Mock()
+            adapter.reject_contract_from_thread = Mock()
+            client = _HelperIBKRClient(adapter)
+
+            client.error(8000, 0, 200, "no security definition")
+            adapter.complete_contract_from_thread.assert_called_once_with(8000, ())
+
+            client.error(8001, 0, 321, "validation error")
+            adapter.reject_contract_from_thread.assert_called_once_with(8001, 321)
+
     def test_zero_and_negative_price_ticks_are_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             settings = HelperSettings(

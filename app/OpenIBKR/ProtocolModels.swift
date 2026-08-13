@@ -5,11 +5,11 @@ enum GatewayState: String, Codable {
 
     var displayName: String {
         switch self {
-        case .connected: "已连接"
-        case .connecting: "连接中"
-        case .recovering: "恢复中"
-        case .disconnected: "已断开"
-        case .stopped: "已停止"
+        case .connected: "Connected"
+        case .connecting: "Connecting"
+        case .recovering: "Recovering"
+        case .disconnected: "Disconnected"
+        case .stopped: "Stopped"
         }
     }
 }
@@ -23,11 +23,11 @@ enum MarketDataKind: String, Codable {
 
     var displayName: String {
         switch self {
-        case .realTime: "实时"
-        case .frozen: "冻结"
-        case .delayed: "延迟"
-        case .delayedFrozen: "延迟冻结"
-        case .unknown: "未知"
+        case .realTime: "Real-Time"
+        case .frozen: "Frozen"
+        case .delayed: "Delayed"
+        case .delayedFrozen: "Delayed Frozen"
+        case .unknown: "Unknown"
         }
     }
 }
@@ -137,6 +137,17 @@ struct AppSnapshot: Codable {
     var account: AccountSnapshot
     var pnl: PnLSnapshot
     var quotes: [QuoteSnapshot]
+
+    var dailyPnLPercent: Decimal? {
+        guard
+            !account.stale,
+            !pnl.stale,
+            let dailyPnL = pnl.daily?.value,
+            let netLiquidation = account.netLiquidation?.value,
+            netLiquidation > 0
+        else { return nil }
+        return dailyPnL / netLiquidation * 100
+    }
 
     static let empty = AppSnapshot(
         protocolVersion: 1,

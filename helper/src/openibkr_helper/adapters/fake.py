@@ -56,6 +56,8 @@ class FakeIBKRAdapter:
         return candidates[0]
 
     async def search_contracts(self, query: ContractQuery) -> tuple[Instrument, ...]:
+        if query.symbol == "MISSING":
+            return ()
         digest = hashlib.sha256(
             f"{query.symbol}|{query.sec_type}|{query.exchange}|{query.currency}".encode()
         ).digest()

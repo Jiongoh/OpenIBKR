@@ -8,10 +8,10 @@ struct OpenIBKRApp: App {
 
     var body: some Scene {
         MenuBarExtra("OpenIBKR", systemImage: "chart.line.uptrend.xyaxis") {
-            Button("显示/隐藏悬浮窗") { appDelegate.togglePanel() }
-            Button("重新连接") { appDelegate.model.reconnect() }
+            Button("Show/Hide Floating Window") { appDelegate.togglePanel() }
+            Button("Reconnect") { appDelegate.model.reconnect() }
             Divider()
-            Button("退出 OpenIBKR") { NSApp.terminate(nil) }
+            Button("Quit OpenIBKR") { NSApp.terminate(nil) }
         }
         Settings {
             SettingsView(model: appDelegate.model)
@@ -32,9 +32,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isUnitTesting: Bool {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
     }
+    private var isPreviewing: Bool {
+        ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1"
+    }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
-        guard !isUnitTesting else { return }
+        guard !isUnitTesting, !isPreviewing else { return }
         do {
             instanceLock = try SingleInstanceLock()
         } catch {
@@ -47,7 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        guard !isUnitTesting else { return }
+        guard !isUnitTesting, !isPreviewing else { return }
         guard mayLaunch else {
             NSApp.terminate(nil)
             return
@@ -142,15 +145,15 @@ private struct SettingsView: View {
                 Text(model.endpointDescription)
                     .foregroundStyle(.secondary)
             }
-            LabeledContent("连接") {
+            LabeledContent("Connection") {
                 Text(model.snapshot.connection.state.displayName)
             }
-            Picker("数据源", selection: $helperAdapter) {
-                Text("IB Gateway（只读）").tag("ibkr")
-                Text("Fake（开发测试）").tag("fake")
+            Picker("Data Source", selection: $helperAdapter) {
+                Text("IB Gateway (Read-Only)").tag("ibkr")
+                Text("Fake (Development)").tag("fake")
             }
-            TextField("Gateway 端口", value: $gatewayPort, format: .number.grouping(.never))
-            Toggle("登录时启动 OpenIBKR", isOn: $launchAtLogin)
+            TextField("Gateway Port", value: $gatewayPort, format: .number.grouping(.never))
+            Toggle("Launch OpenIBKR at Login", isOn: $launchAtLogin)
                 .onChange(of: launchAtLogin) { _, enabled in
                     do {
                         if enabled {
@@ -167,7 +170,7 @@ private struct SettingsView: View {
             if let launchAtLoginError {
                 Text(launchAtLoginError).font(.caption).foregroundStyle(.orange)
             }
-            Text("更改数据源或端口后重启应用生效。一次性 Token 只存在于当前进程内存，不写入磁盘。")
+            Text("Restart the app after changing the data source or port. The one-time token exists only in memory for the current process and is never written to disk.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
