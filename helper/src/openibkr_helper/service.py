@@ -7,10 +7,17 @@ import logging
 import time
 
 from .adapters.base import ContractResolutionError, ReadOnlyDataAdapter
+from .alpaca import AlpacaOvernightProvider
 from .config import HelperSettings
 from .database import Database
-from .events import AdapterEvent, ConnectionEvent
-from .models import AppSnapshot, ContractQuery, Instrument
+from .events import (
+    AdapterEvent,
+    ConnectionEvent,
+    MarketDataTypeEvent,
+    QuoteEvent,
+    QuoteResetEvent,
+)
+from .models import AlpacaCredentials, AppSnapshot, ContractQuery, Instrument, MarketDataStatus
 from .state import SnapshotStore
 from .subscriptions import SubscriptionManager
 
@@ -27,12 +34,14 @@ class HelperService:
         settings: HelperSettings,
         adapter: ReadOnlyDataAdapter,
         database: Database | None = None,
+        market_data: AlpacaOvernightProvider | None = None,
     ) -> None:
         self.settings = settings
         self.adapter = adapter
         self.database = database or Database(settings.database_path)
         self.store = SnapshotStore()
         self.subscriptions = SubscriptionManager(adapter, self.store)
+        self.market_data = market_data or AlpacaOvernightProvider()
         self.started_monotonic = time.monotonic()
         self._stale_task: asyncio.Task[None] | None = None
         self._persistence_task: asyncio.Task[None] | None = None
@@ -56,8 +65,12 @@ class HelperService:
         restored = self.database.load_public_snapshot()
         if restored is not None:
             await self.store.restore(restored)
+        await self.market_data.start(self.handle_market_data_event)
         await self.adapter.start(self.handle_adapter_event)
-        await self.subscriptions.restore(self.database.list_watchlist())
+        instruments = self.database.list_watchlist()
+        await self.subscriptions.restore(instruments)
+        for instrument in instruments:
+            await self.market_data.subscribe(instrument)
         self._stale_task = asyncio.create_task(self._staleness_loop(), name="openibkr-staleness")
         self._persistence_task = asyncio.create_task(
             self._persistence_loop(), name="openibkr-persistence"
@@ -76,6 +89,7 @@ class HelperService:
             self._persistence_task.cancel()
             await asyncio.gather(self._persistence_task, return_exceptions=True)
             self._persistence_task = None
+        await self.market_data.stop()
         await self.subscriptions.stop()
         await self.adapter.stop()
         self.database.save_public_snapshot(await self.store.snapshot())
@@ -90,6 +104,13 @@ class HelperService:
                 getattr(event, "state", "unknown"),
                 getattr(event, "error_code", None),
             )
+        if self.market_data.should_override_quotes() and isinstance(
+            event, (QuoteEvent, QuoteResetEvent, MarketDataTypeEvent)
+        ):
+            return
+        await self.store.apply(event)
+
+    async def handle_market_data_event(self, event: AdapterEvent) -> None:
         await self.store.apply(event)
 
     async def snapshot(self) -> AppSnapshot:
@@ -97,6 +118,15 @@ class HelperService:
 
     async def list_watchlist(self) -> list[Instrument]:
         return self.database.list_watchlist()
+
+    async def market_data_status(self) -> MarketDataStatus:
+        return self.market_data.status()
+
+    async def configure_alpaca(self, credentials: AlpacaCredentials) -> MarketDataStatus:
+        return await self.market_data.configure(credentials)
+
+    async def clear_alpaca(self) -> MarketDataStatus:
+        return await self.market_data.clear()
 
     async def add_watchlist(self, query: ContractQuery) -> Instrument:
         instrument = await self.adapter.resolve_contract(query)
@@ -117,22 +147,30 @@ class HelperService:
             raise WatchlistFullError(f"watchlist limit of {self.settings.max_watchlist} reached")
         self.database.add_to_watchlist(instrument)
         await self.subscriptions.subscribe(instrument)
+        await self.market_data.subscribe(instrument)
         logger.info("watchlist_add con_id=%d", instrument.con_id)
         return instrument
 
     async def remove_watchlist(self, con_id: int) -> bool:
         removed = self.database.remove_from_watchlist(con_id)
+        await self.market_data.unsubscribe(con_id)
         await self.subscriptions.unsubscribe(con_id)
         logger.info("watchlist_remove con_id=%d removed=%s", con_id, removed)
         return removed
 
     async def _staleness_loop(self) -> None:
+        next_retention_cleanup = 0.0
         while True:
             await asyncio.sleep(1.0)
             await self.store.refresh_staleness(
                 pnl_seconds=self.settings.pnl_stale_seconds,
                 quote_seconds=self.settings.quote_stale_seconds,
             )
+            now = time.monotonic()
+            if now >= next_retention_cleanup:
+                await self.store.expire_quote_trends()
+                self.database.prune_pnl_minute()
+                next_retention_cleanup = now + 60.0
 
     async def _persistence_loop(self) -> None:
         while True:

@@ -33,6 +33,7 @@ class MarketDataKind(StrEnum):
     FROZEN = "frozen"
     DELAYED = "delayed"
     DELAYED_FROZEN = "delayed_frozen"
+    OVERNIGHT_INDICATIVE = "overnight_indicative"
     UNKNOWN = "unknown"
 
     @classmethod
@@ -94,6 +95,11 @@ class ContractQuery(ProtocolModel):
         return value.strip().upper()
 
 
+class QuoteTrendPoint(ProtocolModel):
+    sampled_at: datetime
+    price: Decimal = Field(gt=0)
+
+
 class QuoteSnapshot(ProtocolModel):
     instrument: Instrument
     bid: Decimal | None = None
@@ -103,6 +109,27 @@ class QuoteSnapshot(ProtocolModel):
     market_data_kind: MarketDataKind = MarketDataKind.UNKNOWN
     received_at: datetime | None = None
     stale: bool = True
+    trend: tuple[QuoteTrendPoint, ...] = ()
+
+
+class AlpacaCredentials(ProtocolModel):
+    key_id: str = Field(min_length=8, max_length=256, repr=False)
+    secret_key: str = Field(min_length=16, max_length=512, repr=False)
+
+    @field_validator("key_id", "secret_key")
+    @classmethod
+    def reject_surrounding_whitespace(cls, value: str) -> str:
+        if value.strip() != value or not value:
+            raise ValueError("credential must not contain surrounding whitespace")
+        return value
+
+
+class MarketDataStatus(ProtocolModel):
+    provider: Literal["ibkr", "alpaca_overnight"] = "ibkr"
+    configured: bool = False
+    active: bool = False
+    last_update_at: datetime | None = None
+    error: str | None = Field(default=None, max_length=256)
 
 
 class AppSnapshot(ProtocolModel):
@@ -113,6 +140,7 @@ class AppSnapshot(ProtocolModel):
     account: AccountSnapshot = Field(default_factory=AccountSnapshot)
     pnl: PnLSnapshot = Field(default_factory=PnLSnapshot)
     quotes: tuple[QuoteSnapshot, ...] = ()
+    market_data: MarketDataStatus = Field(default_factory=MarketDataStatus)
 
 
 class StreamEnvelope(ProtocolModel):

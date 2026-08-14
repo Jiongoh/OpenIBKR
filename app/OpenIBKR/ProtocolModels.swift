@@ -19,6 +19,7 @@ enum MarketDataKind: String, Codable {
     case frozen
     case delayed
     case delayedFrozen = "delayed_frozen"
+    case overnightIndicative = "overnight_indicative"
     case unknown
 
     var displayName: String {
@@ -27,6 +28,7 @@ enum MarketDataKind: String, Codable {
         case .frozen: "Frozen"
         case .delayed: "Delayed"
         case .delayedFrozen: "Delayed Frozen"
+        case .overnightIndicative: "Overnight Indicative"
         case .unknown: "Unknown"
         }
     }
@@ -96,6 +98,11 @@ struct Instrument: Codable, Identifiable, Hashable {
     var id: Int { conId }
 }
 
+struct QuoteTrendPoint: Codable, Equatable {
+    let sampledAt: Date
+    let price: DecimalString
+}
+
 struct QuoteSnapshot: Codable, Identifiable {
     var instrument: Instrument
     var bid: DecimalString?
@@ -105,6 +112,7 @@ struct QuoteSnapshot: Codable, Identifiable {
     var marketDataKind: MarketDataKind
     var receivedAt: Date?
     var stale: Bool
+    var trend: [QuoteTrendPoint]? = nil
 
     var id: Int { instrument.conId }
 
@@ -129,6 +137,29 @@ struct QuoteSnapshot: Codable, Identifiable {
     }
 }
 
+struct MarketDataStatus: Codable, Equatable {
+    var provider: String
+    var configured: Bool
+    var active: Bool
+    var lastUpdateAt: Date?
+    var error: String?
+
+    static let ibkr = MarketDataStatus(
+        provider: "ibkr",
+        configured: false,
+        active: false,
+        lastUpdateAt: nil,
+        error: nil
+    )
+
+    var displayName: String {
+        switch provider {
+        case "alpaca_overnight": active ? "Alpaca Overnight · Active" : "Alpaca Overnight · Standby"
+        default: "IB Gateway"
+        }
+    }
+}
+
 struct AppSnapshot: Codable {
     var protocolVersion: Int
     var sequence: Int
@@ -137,6 +168,7 @@ struct AppSnapshot: Codable {
     var account: AccountSnapshot
     var pnl: PnLSnapshot
     var quotes: [QuoteSnapshot]
+    var marketData: MarketDataStatus? = nil
 
     var dailyPnLPercent: Decimal? {
         guard
@@ -148,6 +180,8 @@ struct AppSnapshot: Codable {
         else { return nil }
         return dailyPnL / netLiquidation * 100
     }
+
+    var currentMarketData: MarketDataStatus { marketData ?? .ibkr }
 
     static let empty = AppSnapshot(
         protocolVersion: 1,

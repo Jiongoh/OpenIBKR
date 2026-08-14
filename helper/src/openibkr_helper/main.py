@@ -26,6 +26,41 @@ def build_service(settings: HelperSettings) -> HelperService:
     return HelperService(settings, adapter)
 
 
+def _configured_parent_pid() -> int | None:
+    raw = os.environ.get("OPENIBKR_PARENT_PID")
+    if raw is None:
+        return None
+    try:
+        parent_pid = int(raw)
+    except ValueError as exc:
+        raise RuntimeError("OPENIBKR_PARENT_PID must be an integer") from exc
+    if parent_pid <= 1:
+        raise RuntimeError("OPENIBKR_PARENT_PID must identify a user process")
+    return parent_pid
+
+
+def _process_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+async def _watch_parent(server: uvicorn.Server, parent_pid: int | None) -> None:
+    if parent_pid is None:
+        return
+    while True:
+        await asyncio.sleep(2.0)
+        if _process_exists(parent_pid):
+            continue
+        logger.info("helper_parent_gone exiting=true")
+        server.should_exit = True
+        return
+
+
 async def serve(settings: HelperSettings) -> None:
     service = build_service(settings)
     app = create_app(service)
@@ -35,22 +70,6 @@ async def serve(settings: HelperSettings) -> None:
     listener.listen(128)
     listener.setblocking(False)
     port = int(listener.getsockname()[1])
-    # The handshake means the database and adapter have initialized, not merely
-    # that a TCP socket was allocated.  FastAPI lifespan start is idempotent.
-    await service.start()
-    logger.info("helper_ready host=127.0.0.1 port=%d protocol=%d", port, PROTOCOL_VERSION)
-    print(
-        json.dumps(
-            {
-                "type": "ready",
-                "protocol_version": PROTOCOL_VERSION,
-                "port": port,
-                "pid": os.getpid(),
-            },
-            sort_keys=True,
-        ),
-        flush=True,
-    )
     config = uvicorn.Config(
         app,
         host=settings.bind_host,
@@ -59,9 +78,33 @@ async def serve(settings: HelperSettings) -> None:
         access_log=False,
     )
     server = uvicorn.Server(config)
+    parent_watchdog = asyncio.create_task(
+        _watch_parent(server, _configured_parent_pid()),
+        name="openibkr-parent-watchdog",
+    )
+    # The handshake means the database and adapter have initialized, not merely
+    # that a TCP socket was allocated.  FastAPI lifespan start is idempotent.
     try:
+        await service.start()
+        if server.should_exit:
+            return
+        logger.info("helper_ready host=127.0.0.1 port=%d protocol=%d", port, PROTOCOL_VERSION)
+        print(
+            json.dumps(
+                {
+                    "type": "ready",
+                    "protocol_version": PROTOCOL_VERSION,
+                    "port": port,
+                    "pid": os.getpid(),
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
         await server.serve(sockets=[listener])
     finally:
+        parent_watchdog.cancel()
+        await asyncio.gather(parent_watchdog, return_exceptions=True)
         await service.stop()
 
 

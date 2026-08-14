@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .events import (
@@ -11,10 +11,12 @@ from .events import (
     AdapterEvent,
     ConnectionEvent,
     InstrumentResolvedEvent,
+    MarketDataStatusEvent,
     MarketDataTypeEvent,
     PnLEvent,
     QuoteEvent,
     QuoteResetEvent,
+    QuoteTrendEvent,
 )
 from .models import (
     AccountSnapshot,
@@ -22,6 +24,7 @@ from .models import (
     ConnectionStatus,
     GatewayState,
     Instrument,
+    MarketDataStatus,
     PnLSnapshot,
     QuoteSnapshot,
     StreamEnvelope,
@@ -37,6 +40,7 @@ class SnapshotStore:
         self._account = AccountSnapshot()
         self._pnl = PnLSnapshot()
         self._quotes: dict[int, QuoteSnapshot] = {}
+        self._market_data = MarketDataStatus()
         self._subscribers: set[asyncio.Queue[StreamEnvelope]] = set()
 
     async def snapshot(self) -> AppSnapshot:
@@ -55,6 +59,7 @@ class SnapshotStore:
                 quote.instrument.con_id: quote.model_copy(update={"stale": True})
                 for quote in snapshot.quotes
             }
+            self._market_data = MarketDataStatus()
 
     async def ensure_instrument(self, instrument: Instrument) -> None:
         async with self._lock:
@@ -124,10 +129,24 @@ class SnapshotStore:
                 if quote is None or event.value <= 0:
                     return
                 quote = quote.model_copy(
-                    update={event.field: event.value, "received_at": now, "stale": False}
+                    update={
+                        event.field: event.value,
+                        "received_at": event.observed_at or now,
+                        "stale": False,
+                    }
                 )
                 self._quotes[event.con_id] = quote
                 kind, data = "quote", quote
+            elif isinstance(event, QuoteTrendEvent):
+                quote = self._quotes.get(event.con_id)
+                if quote is None:
+                    return
+                quote = quote.model_copy(update={"trend": event.points})
+                self._quotes[event.con_id] = quote
+                kind, data = "quote_trend", quote
+            elif isinstance(event, MarketDataStatusEvent):
+                self._market_data = event.status
+                kind, data = "market_data_status", event.status
             elif isinstance(event, QuoteResetEvent):
                 quote = self._quotes.get(event.con_id)
                 if quote is None:
@@ -170,6 +189,28 @@ class SnapshotStore:
                 await self._publish_unlocked("staleness", self._snapshot_unlocked())
             return changed
 
+    async def expire_quote_trends(
+        self,
+        *,
+        retention: timedelta = timedelta(hours=24),
+        now: datetime | None = None,
+    ) -> bool:
+        current = now or datetime.now(UTC)
+        cutoff = current - retention
+        async with self._lock:
+            changed_con_ids: list[int] = []
+            for con_id, quote in list(self._quotes.items()):
+                retained = tuple(
+                    point for point in quote.trend if cutoff <= point.sampled_at <= current
+                )
+                if retained == quote.trend:
+                    continue
+                self._quotes[con_id] = quote.model_copy(update={"trend": retained})
+                changed_con_ids.append(con_id)
+            if changed_con_ids:
+                await self._publish_unlocked("trend_expiration", {"con_ids": changed_con_ids})
+            return bool(changed_con_ids)
+
     async def register(self) -> asyncio.Queue[StreamEnvelope]:
         queue: asyncio.Queue[StreamEnvelope] = asyncio.Queue(maxsize=64)
         async with self._lock:
@@ -195,6 +236,7 @@ class SnapshotStore:
             account=self._account,
             pnl=self._pnl,
             quotes=tuple(self._quotes[key] for key in sorted(self._quotes)),
+            market_data=self._market_data,
         )
 
     async def _publish_unlocked(self, kind: str, data: Any) -> None:

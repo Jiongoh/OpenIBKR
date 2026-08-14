@@ -11,7 +11,14 @@ from fastapi.websockets import WebSocketDisconnect
 from . import HELPER_VERSION
 from .adapters.base import AdapterUnavailableError, ContractResolutionError
 from .database import SCHEMA_VERSION
-from .models import AppSnapshot, ContractQuery, HealthResponse, Instrument
+from .models import (
+    AlpacaCredentials,
+    AppSnapshot,
+    ContractQuery,
+    HealthResponse,
+    Instrument,
+    MarketDataStatus,
+)
 from .service import HelperService, WatchlistFullError
 
 
@@ -58,6 +65,30 @@ def create_app(service: HelperService) -> FastAPI:
     @app.get("/v1/snapshot", response_model=AppSnapshot, dependencies=[Depends(authorize)])
     async def snapshot() -> AppSnapshot:
         return await service.snapshot()
+
+    @app.get(
+        "/v1/market-data/status",
+        response_model=MarketDataStatus,
+        dependencies=[Depends(authorize)],
+    )
+    async def market_data_status() -> MarketDataStatus:
+        return await service.market_data_status()
+
+    @app.post(
+        "/v1/market-data/alpaca/credentials",
+        response_model=MarketDataStatus,
+        dependencies=[Depends(authorize)],
+    )
+    async def configure_alpaca(credentials: AlpacaCredentials) -> MarketDataStatus:
+        return await service.configure_alpaca(credentials)
+
+    @app.delete(
+        "/v1/market-data/alpaca/credentials",
+        response_model=MarketDataStatus,
+        dependencies=[Depends(authorize)],
+    )
+    async def clear_alpaca() -> MarketDataStatus:
+        return await service.clear_alpaca()
 
     @app.get(
         "/v1/watchlist",

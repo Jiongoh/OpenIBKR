@@ -24,9 +24,14 @@ handshake.
 - `POST /v1/watchlist`
 - `POST /v1/watchlist/instrument`
 - `DELETE /v1/watchlist/{con_id}`
+- `GET /v1/market-data/status`
+- `POST /v1/market-data/alpaca/credentials`
+- `DELETE /v1/market-data/alpaca/credentials`
 
 There are deliberately no order, trade, execution, allocation or account-write
-routes.
+routes. The Alpaca credential body is accepted only on the authenticated
+loopback connection, retained only in Helper process memory and used solely by
+the fixed read-only market-data client.
 
 ## WebSocket
 
@@ -37,7 +42,9 @@ sequence number and contain a `kind` plus the changed object.
 Decimal financial values are serialized as JSON strings to prevent binary
 floating-point loss.  Every P&L and quote object includes source receipt time
 and a `stale` flag.  Market data is explicitly classified as `real_time`,
-`frozen`, `delayed`, `delayed_frozen` or `unknown`.
+`frozen`, `delayed`, `delayed_frozen`, `overnight_indicative` or `unknown`.
+Quote snapshots may carry timestamped trend points, and the app snapshot carries
+the active market-data provider's configuration, activity and error status.
 
 The normative Python models are in
 `helper/src/openibkr_helper/models.py`; `messages.schema.json` fixes the outer

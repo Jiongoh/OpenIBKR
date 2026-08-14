@@ -51,6 +51,28 @@ struct HelperClient {
         return snapshot
     }
 
+    func configureAlpaca(credentials: AlpacaCredentials) async throws -> MarketDataStatus {
+        let payload = AlpacaCredentialPayload(
+            keyID: credentials.keyID,
+            secretKey: credentials.secretKey
+        )
+        let body = try ProtocolCoding.encoder().encode(payload)
+        let data = try await request(
+            path: "/v1/market-data/alpaca/credentials",
+            method: "POST",
+            body: body
+        )
+        return try ProtocolCoding.decoder().decode(MarketDataStatus.self, from: data)
+    }
+
+    func clearAlpacaCredentials() async throws -> MarketDataStatus {
+        let data = try await request(
+            path: "/v1/market-data/alpaca/credentials",
+            method: "DELETE"
+        )
+        return try ProtocolCoding.decoder().decode(MarketDataStatus.self, from: data)
+    }
+
     func add(symbol: String) async throws {
         let body = try ProtocolCoding.encoder().encode(ContractQuery(symbol: symbol))
         _ = try await request(path: "/v1/watchlist", method: "POST", body: body)
@@ -132,4 +154,9 @@ struct HelperClient {
         }
         return nil
     }
+}
+
+private struct AlpacaCredentialPayload: Encodable {
+    let keyID: String
+    let secretKey: String
 }

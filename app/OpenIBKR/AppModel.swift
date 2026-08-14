@@ -1,9 +1,74 @@
 import Combine
 import Foundation
 
+enum QuoteTrendDirection: Equatable {
+    case rising
+    case falling
+    case flat
+
+    static func from(_ points: [QuoteTrendPoint]) -> QuoteTrendDirection {
+        guard let first = points.first?.price.value,
+              let last = points.last?.price.value
+        else { return .flat }
+        if last > first { return .rising }
+        if last < first { return .falling }
+        return .flat
+    }
+}
+
+enum QuoteTrendHistory {
+    static let sampleInterval: TimeInterval = 60
+    static let retentionInterval: TimeInterval = 24 * 60 * 60
+
+    static func recording(
+        price: Decimal,
+        at date: Date,
+        in points: [QuoteTrendPoint]
+    ) -> [QuoteTrendPoint] {
+        guard price > 0 else { return pruned(points, relativeTo: date) }
+        let bucket = Date(
+            timeIntervalSince1970:
+                floor(date.timeIntervalSince1970 / sampleInterval) * sampleInterval
+        )
+        var result = pruned(points, relativeTo: date)
+        let point = QuoteTrendPoint(sampledAt: bucket, price: DecimalString(price))
+
+        if let last = result.last, last.sampledAt == bucket {
+            if last.price != point.price {
+                result[result.count - 1] = point
+            }
+        } else if result.last?.price != point.price,
+                  result.last?.sampledAt ?? .distantPast < bucket
+        {
+            result.append(point)
+        }
+        return pruned(result, relativeTo: date)
+    }
+
+    static func pruned(
+        _ points: [QuoteTrendPoint],
+        relativeTo date: Date
+    ) -> [QuoteTrendPoint] {
+        let cutoff = date.addingTimeInterval(-retentionInterval)
+        let sorted = points
+            .filter { $0.sampledAt >= cutoff && $0.sampledAt <= date }
+            .sorted { $0.sampledAt < $1.sampledAt }
+        return sorted.reduce(into: []) { result, point in
+            if result.last?.price != point.price {
+                result.append(point)
+            }
+        }
+    }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
-    @Published private(set) var snapshot = AppSnapshot.empty
+    @Published private(set) var snapshot = AppSnapshot.empty {
+        didSet { recordQuoteTrends(from: snapshot) }
+    }
+    @Published private(set) var quoteTrends: [Int: [QuoteTrendPoint]]
+    @Published private(set) var hasAlpacaCredentials = false
+    @Published private(set) var alpacaCredentialMessage: String?
     @Published private(set) var errorMessage: String?
     @Published private(set) var symbolErrorMessage: String?
     @Published private(set) var isSearchingSymbol = false
@@ -24,18 +89,72 @@ final class AppModel: ObservableObject {
     private var connectionTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
     private var symbolLookupTask: Task<Void, Never>?
+    private var trendPersistenceTask: Task<Void, Never>?
+    private var trendCleanupTask: Task<Void, Never>?
     private var symbolLookupGeneration = 0
     private var submittedSymbol: String?
+    private let trendDefaults: UserDefaults
+    private let credentialsStore: AlpacaCredentialsStore
+    private let trendDefaultsKey = "openibkr.quote-trends.v1"
+
+    init(
+        defaults: UserDefaults = .standard,
+        credentialsStore: AlpacaCredentialsStore = AlpacaCredentialsStore()
+    ) {
+        trendDefaults = defaults
+        self.credentialsStore = credentialsStore
+        let decoded: [Int: [QuoteTrendPoint]]
+        if let data = defaults.data(forKey: trendDefaultsKey),
+           let stored = try? JSONDecoder().decode([Int: [QuoteTrendPoint]].self, from: data)
+        {
+            decoded = stored.mapValues {
+                QuoteTrendHistory.pruned($0, relativeTo: .now)
+            }
+        } else {
+            decoded = [:]
+        }
+        _quoteTrends = Published(initialValue: decoded.filter { !$0.value.isEmpty })
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+            hasAlpacaCredentials = (try? credentialsStore.load()) != nil
+        }
+    }
 
     var endpointDescription: String {
         endpoint.map { $0.baseURL.absoluteString } ?? "Waiting for the app-managed Helper"
     }
 
-    func start() { reconnect() }
+    func start() {
+        startTrendCleanup()
+        reconnect()
+        Task { await injectStoredAlpacaCredentials() }
+    }
 
     func configure(endpoint: HelperEndpoint) {
         self.endpoint = endpoint
+        startTrendCleanup()
         reconnect()
+        Task { await injectStoredAlpacaCredentials() }
+    }
+
+    func saveAlpacaCredentials(keyID: String, secretKey: String) async throws {
+        let credentials = AlpacaCredentials(keyID: keyID, secretKey: secretKey)
+        try credentialsStore.save(credentials)
+        hasAlpacaCredentials = true
+        alpacaCredentialMessage = "Saved securely in macOS Keychain"
+        guard let endpoint else { return }
+        let status = try await HelperClient(endpoint: endpoint).configureAlpaca(
+            credentials: credentials
+        )
+        snapshot.marketData = status
+    }
+
+    func removeAlpacaCredentials() async throws {
+        try credentialsStore.delete()
+        hasAlpacaCredentials = false
+        alpacaCredentialMessage = "Alpaca credentials removed"
+        guard let endpoint else { return }
+        let status = try await HelperClient(endpoint: endpoint).clearAlpacaCredentials()
+        snapshot.marketData = status
     }
 
     func reportRuntimeError(_ error: Error) {
@@ -51,6 +170,11 @@ final class AppModel: ObservableObject {
     func stop() {
         connectionTask?.cancel()
         refreshTask?.cancel()
+        trendPersistenceTask?.cancel()
+        trendPersistenceTask = nil
+        trendCleanupTask?.cancel()
+        trendCleanupTask = nil
+        persistQuoteTrends()
         cancelSymbolLookup(clearError: false)
     }
 
@@ -195,6 +319,96 @@ final class AppModel: ObservableObject {
             guard let self, !Task.isCancelled else { return }
             defer { refreshTask = nil }
             if let value = try? await client.snapshot() { snapshot = value }
+        }
+    }
+
+    private func recordQuoteTrends(from snapshot: AppSnapshot) {
+        let now = Date.now
+        let cutoff = now.addingTimeInterval(-QuoteTrendHistory.retentionInterval)
+        let activeIDs = Set(snapshot.quotes.map(\.id))
+        var updated = quoteTrends.reduce(into: [Int: [QuoteTrendPoint]]()) {
+            result, item in
+            guard activeIDs.contains(item.key) else { return }
+            let retained = QuoteTrendHistory.pruned(item.value, relativeTo: now)
+            if !retained.isEmpty { result[item.key] = retained }
+        }
+
+        for quote in snapshot.quotes {
+            // Sample exactly what the row displays. Staleness controls the
+            // status presentation, but must not discard an observed price
+            // change that is already visible to the user.
+            let stored = updated[quote.id] ?? []
+            let supplied = QuoteTrendHistory.pruned(quote.trend ?? [], relativeTo: now)
+            let current = supplied.isEmpty ? stored : supplied
+            var next = current
+            if let price = quote.displayPrice?.value {
+                let observedAt = quote.receivedAt ?? now
+                if observedAt >= cutoff, observedAt <= now {
+                    next = QuoteTrendHistory.pruned(
+                        QuoteTrendHistory.recording(
+                            price: price,
+                            at: observedAt,
+                            in: current
+                        ),
+                        relativeTo: now
+                    )
+                }
+            }
+            if next.isEmpty {
+                updated.removeValue(forKey: quote.id)
+            } else {
+                updated[quote.id] = next
+            }
+        }
+
+        guard updated != quoteTrends else { return }
+        quoteTrends = updated
+        scheduleTrendPersistence()
+    }
+
+    private func startTrendCleanup() {
+        recordQuoteTrends(from: snapshot)
+        guard trendCleanupTask == nil else { return }
+        trendCleanupTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                guard let self, !Task.isCancelled else { return }
+                recordQuoteTrends(from: snapshot)
+            }
+        }
+    }
+
+    private func scheduleTrendPersistence() {
+        guard trendPersistenceTask == nil else { return }
+        trendPersistenceTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            guard let self, !Task.isCancelled else { return }
+            defer { trendPersistenceTask = nil }
+            persistQuoteTrends()
+        }
+    }
+
+    private func persistQuoteTrends() {
+        if let data = try? JSONEncoder().encode(quoteTrends) {
+            trendDefaults.set(data, forKey: trendDefaultsKey)
+        }
+    }
+
+    private func injectStoredAlpacaCredentials() async {
+        do {
+            guard let credentials = try credentialsStore.load() else {
+                hasAlpacaCredentials = false
+                return
+            }
+            hasAlpacaCredentials = true
+            guard let endpoint else { return }
+            let status = try await HelperClient(endpoint: endpoint).configureAlpaca(
+                credentials: credentials
+            )
+            snapshot.marketData = status
+            alpacaCredentialMessage = nil
+        } catch {
+            alpacaCredentialMessage = error.localizedDescription
         }
     }
 

@@ -10,12 +10,13 @@ struct OpenIBKRApp: App {
         MenuBarExtra("OpenIBKR", systemImage: "chart.line.uptrend.xyaxis") {
             Button("Show/Hide Floating Window") { appDelegate.togglePanel() }
             Button("Reconnect") { appDelegate.model.reconnect() }
+            SettingsLink { Text("Settings…") }
             Divider()
             Button("Quit OpenIBKR") { NSApp.terminate(nil) }
         }
         Settings {
             SettingsView(model: appDelegate.model)
-                .frame(width: 440, height: 320)
+                .frame(width: 500, height: 520)
         }
     }
 }
@@ -138,42 +139,129 @@ private struct SettingsView: View {
     @AppStorage("helperAdapter") private var helperAdapter = "ibkr"
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var launchAtLoginError: String?
+    @State private var alpacaKeyID = ""
+    @State private var alpacaSecret = ""
+    @State private var alpacaSettingsError: String?
+    @State private var isSavingAlpaca = false
 
     var body: some View {
         Form {
-            LabeledContent("Helper") {
-                Text(model.endpointDescription)
+            Section("IB Gateway") {
+                LabeledContent("Helper") {
+                    Text(model.endpointDescription)
+                        .foregroundStyle(.secondary)
+                }
+                LabeledContent("Connection") {
+                    Text(model.snapshot.connection.state.displayName)
+                }
+                Picker("Account Data Source", selection: $helperAdapter) {
+                    Text("IB Gateway (Read-Only)").tag("ibkr")
+                    Text("Fake (Development)").tag("fake")
+                }
+                TextField("Gateway Port", value: $gatewayPort, format: .number.grouping(.never))
+            }
+
+            Section("Alpaca Overnight Market Data") {
+                LabeledContent("Status") {
+                    Text(model.snapshot.currentMarketData.displayName)
+                        .foregroundStyle(
+                            model.snapshot.currentMarketData.error == nil
+                                ? Color.secondary
+                                : Color.orange
+                        )
+                }
+                if model.hasAlpacaCredentials {
+                    Label("Paper API credentials are stored in macOS Keychain", systemImage: "lock.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                TextField(
+                    model.hasAlpacaCredentials ? "New API Key ID (leave blank to keep)" : "API Key ID",
+                    text: $alpacaKeyID
+                )
+                SecureField(
+                    model.hasAlpacaCredentials ? "New Secret Key (leave blank to keep)" : "Secret Key",
+                    text: $alpacaSecret
+                )
+                HStack {
+                    Button("Save & Connect") {
+                        saveAlpacaCredentials()
+                    }
+                    .disabled(
+                        isSavingAlpaca || alpacaKeyID.isEmpty || alpacaSecret.isEmpty
+                    )
+                    if model.hasAlpacaCredentials {
+                        Button("Remove", role: .destructive) {
+                            removeAlpacaCredentials()
+                        }
+                    }
+                    if isSavingAlpaca { ProgressView().controlSize(.small) }
+                }
+                if let error = alpacaSettingsError ?? model.snapshot.currentMarketData.error {
+                    Text(error).font(.caption).foregroundStyle(.orange)
+                } else if let message = model.alpacaCredentialMessage {
+                    Text(message).font(.caption).foregroundStyle(.secondary)
+                }
+                Text("Uses Alpaca only for U.S. overnight quotes and charts. No Alpaca trading or account endpoint exists in OpenIBKR.")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            LabeledContent("Connection") {
-                Text(model.snapshot.connection.state.displayName)
-            }
-            Picker("Data Source", selection: $helperAdapter) {
-                Text("IB Gateway (Read-Only)").tag("ibkr")
-                Text("Fake (Development)").tag("fake")
-            }
-            TextField("Gateway Port", value: $gatewayPort, format: .number.grouping(.never))
-            Toggle("Launch OpenIBKR at Login", isOn: $launchAtLogin)
-                .onChange(of: launchAtLogin) { _, enabled in
-                    do {
-                        if enabled {
-                            try SMAppService.mainApp.register()
-                        } else {
-                            try SMAppService.mainApp.unregister()
+
+            Section("Application") {
+                Toggle("Launch OpenIBKR at Login", isOn: $launchAtLogin)
+                    .onChange(of: launchAtLogin) { _, enabled in
+                        do {
+                            if enabled {
+                                try SMAppService.mainApp.register()
+                            } else {
+                                try SMAppService.mainApp.unregister()
+                            }
+                            launchAtLoginError = nil
+                        } catch {
+                            launchAtLoginError = error.localizedDescription
+                            launchAtLogin = SMAppService.mainApp.status == .enabled
                         }
-                        launchAtLoginError = nil
-                    } catch {
-                        launchAtLoginError = error.localizedDescription
-                        launchAtLogin = SMAppService.mainApp.status == .enabled
                     }
+                if let launchAtLoginError {
+                    Text(launchAtLoginError).font(.caption).foregroundStyle(.orange)
                 }
-            if let launchAtLoginError {
-                Text(launchAtLoginError).font(.caption).foregroundStyle(.orange)
+                Text("Restart the app after changing the account data source or port. Credentials and the one-time local Helper token are never written to project files.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            Text("Restart the app after changing the data source or port. The one-time token exists only in memory for the current process and is never written to disk.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
         .padding()
+    }
+
+    private func saveAlpacaCredentials() {
+        let keyID = alpacaKeyID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let secret = alpacaSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+        isSavingAlpaca = true
+        alpacaSettingsError = nil
+        Task {
+            do {
+                try await model.saveAlpacaCredentials(keyID: keyID, secretKey: secret)
+                alpacaKeyID = ""
+                alpacaSecret = ""
+            } catch {
+                alpacaSettingsError = error.localizedDescription
+            }
+            isSavingAlpaca = false
+        }
+    }
+
+    private func removeAlpacaCredentials() {
+        isSavingAlpaca = true
+        alpacaSettingsError = nil
+        Task {
+            do {
+                try await model.removeAlpacaCredentials()
+                alpacaKeyID = ""
+                alpacaSecret = ""
+            } catch {
+                alpacaSettingsError = error.localizedDescription
+            }
+            isSavingAlpaca = false
+        }
     }
 }

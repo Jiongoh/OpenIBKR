@@ -69,6 +69,136 @@ final class ProtocolModelsTests: XCTestCase {
         )
     }
 
+    func testFinalQuoteHoverTargetIncludesAddButtonAccessory() {
+        let finalRowAccessoryPoint = CGPoint(
+            x: DashboardLayout.expandedModuleWidth + 12,
+            y: DashboardLayout.pnlHeight + DashboardLayout.moduleSpacing + 10 + 24
+        )
+
+        XCTAssertFalse(
+            DashboardLayout.quoteHoverFrame(index: 0, expanded: true)
+                .contains(finalRowAccessoryPoint)
+        )
+        XCTAssertTrue(
+            DashboardLayout.quoteHoverFrame(
+                index: 0,
+                expanded: true,
+                includesAccessory: true
+            )
+            .contains(finalRowAccessoryPoint)
+        )
+    }
+
+    func testAddSymbolSpaceDoesNotShrinkEmptyWatchlist() {
+        let idleHeight = DashboardLayout.watchlistHeight(
+            quoteCount: 0,
+            reservesAddSymbolSpace: false
+        )
+        let inputHeight = DashboardLayout.watchlistHeight(
+            quoteCount: 0,
+            reservesAddSymbolSpace: true
+        )
+
+        XCTAssertEqual(idleHeight, DashboardLayout.emptyWatchlistHeight)
+        XCTAssertEqual(inputHeight, idleHeight)
+    }
+
+    func testAddSymbolSpaceIsReservedBeforeInputTransition() {
+        let idleHeight = DashboardLayout.watchlistHeight(
+            quoteCount: 2,
+            reservesAddSymbolSpace: false
+        )
+        let reservedHeight = DashboardLayout.watchlistHeight(
+            quoteCount: 2,
+            reservesAddSymbolSpace: true
+        )
+
+        XCTAssertEqual(reservedHeight - idleHeight, 51)
+    }
+
+    func testInputReservationDoesNotResizeFourQuoteViewport() {
+        let idleHeight = DashboardLayout.quoteViewportHeight(
+            quoteCount: 4,
+            reservesAddSymbolSpace: false
+        )
+        let reservedHeight = DashboardLayout.quoteViewportHeight(
+            quoteCount: 4,
+            reservesAddSymbolSpace: true
+        )
+
+        XCTAssertEqual(idleHeight, DashboardLayout.quoteRowsContentHeight(count: 4))
+        XCTAssertEqual(reservedHeight, idleHeight)
+    }
+
+    func testQuoteRemovalKeepsPreviousLayoutCountUntilAnimationFinishes() {
+        let layoutCount = DashboardLayout.quoteCountForLayout(
+            current: 3,
+            reserved: 4
+        )
+
+        XCTAssertEqual(layoutCount, 4)
+        XCTAssertEqual(
+            DashboardLayout.watchlistHeight(
+                quoteCount: layoutCount,
+                reservesAddSymbolSpace: false
+            ),
+            DashboardLayout.watchlistHeight(
+                quoteCount: 4,
+                reservesAddSymbolSpace: false
+            )
+        )
+    }
+
+    func testQuoteTrendTracksDisplayedPriceChangesWithinCurrentMinute() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let first = QuoteTrendHistory.recording(price: 100, at: start, in: [])
+        let sameMinute = QuoteTrendHistory.recording(
+            price: 101,
+            at: start.addingTimeInterval(30),
+            in: first
+        )
+        let appended = QuoteTrendHistory.recording(
+            price: 102,
+            at: start.addingTimeInterval(60),
+            in: sameMinute
+        )
+
+        XCTAssertEqual(sameMinute.map(\.price.value), [Decimal(101)])
+        XCTAssertEqual(appended.map(\.price.value), [Decimal(101), Decimal(102)])
+        XCTAssertEqual(QuoteTrendDirection.from(appended), .rising)
+    }
+
+    func testQuoteTrendDoesNotCreateRepeatedPointsForUnchangedDisplayedPrice() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let first = QuoteTrendHistory.recording(price: 100, at: start, in: [])
+        let unchanged = QuoteTrendHistory.recording(
+            price: 100,
+            at: start.addingTimeInterval(600),
+            in: first
+        )
+
+        XCTAssertEqual(unchanged, first)
+    }
+
+    func testQuoteTrendDropsSamplesOlderThanTwentyFourHours() {
+        let now = Date(timeIntervalSince1970: 1_800_100_000)
+        let points = [
+            QuoteTrendPoint(
+                sampledAt: now.addingTimeInterval(-QuoteTrendHistory.retentionInterval - 1),
+                price: DecimalString(99)
+            ),
+            QuoteTrendPoint(
+                sampledAt: now.addingTimeInterval(-60),
+                price: DecimalString(100)
+            ),
+        ]
+
+        let result = QuoteTrendHistory.recording(price: 98, at: now, in: points)
+
+        XCTAssertEqual(result.map(\.price.value), [Decimal(100), Decimal(98)])
+        XCTAssertEqual(QuoteTrendDirection.from(result), .falling)
+    }
+
     func testHoverSessionUsesOneStableWidthAcrossModules() {
         let stableWidth = DashboardLayout.stableHoverWidth(
             watchlistExpanded: true,
@@ -135,7 +265,58 @@ final class ProtocolModelsTests: XCTestCase {
     func testMarketDataLabelsRemainExplicit() {
         XCTAssertEqual(MarketDataKind.realTime.displayName, "Real-Time")
         XCTAssertEqual(MarketDataKind.delayed.displayName, "Delayed")
+        XCTAssertEqual(MarketDataKind.overnightIndicative.displayName, "Overnight Indicative")
         XCTAssertNotEqual(MarketDataKind.realTime.displayName, MarketDataKind.delayed.displayName)
+    }
+
+    func testDecodesAlpacaOvernightStatusAndTrend() throws {
+        let json = #"""
+        {
+          "protocol_version": 1,
+          "sequence": 9,
+          "generated_at": "2026-08-14T03:00:00Z",
+          "connection": {
+            "state": "connected",
+            "changed_at": "2026-08-14T02:59:00Z",
+            "last_error_code": null
+          },
+          "account": {"stale": true},
+          "pnl": {"stale": true},
+          "quotes": [{
+            "instrument": {
+              "con_id": 265598,
+              "symbol": "AAPL",
+              "sec_type": "STK",
+              "exchange": "SMART",
+              "currency": "USD",
+              "primary_exchange": "NASDAQ",
+              "local_symbol": "AAPL"
+            },
+            "bid": "100.10",
+            "ask": "100.30",
+            "last": "100.20",
+            "close": "99.00",
+            "market_data_kind": "overnight_indicative",
+            "received_at": "2026-08-14T02:59:58Z",
+            "stale": false,
+            "trend": [{"sampled_at": "2026-08-14T02:59:00Z", "price": "100.20"}]
+          }],
+          "market_data": {
+            "provider": "alpaca_overnight",
+            "configured": true,
+            "active": true,
+            "last_update_at": "2026-08-14T02:59:58Z",
+            "error": null
+          }
+        }
+        """#
+
+        let snapshot = try ProtocolCoding.decoder().decode(AppSnapshot.self, from: Data(json.utf8))
+
+        XCTAssertEqual(snapshot.currentMarketData.provider, "alpaca_overnight")
+        XCTAssertTrue(snapshot.currentMarketData.active)
+        XCTAssertEqual(snapshot.quotes.first?.marketDataKind, .overnightIndicative)
+        XCTAssertEqual(snapshot.quotes.first?.trend?.first?.price.value, Decimal(string: "100.20"))
     }
 
     func testQuoteFallsBackToCloseWhenLastPriceIsZero() {

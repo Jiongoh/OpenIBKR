@@ -196,6 +196,7 @@ final class HelperProcessManager {
             "OPENIBKR_ADAPTER": adapter,
             "OPENIBKR_GATEWAY_PORT": String(gatewayPort),
             "OPENIBKR_DATABASE_PATH": applicationSupport.appending(path: "openibkr.sqlite3").path,
+            "OPENIBKR_PARENT_PID": String(ProcessInfo.processInfo.processIdentifier),
             "LC_ALL": "en_US.UTF-8",
         ]
     }

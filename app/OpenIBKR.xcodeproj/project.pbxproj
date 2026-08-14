@@ -13,6 +13,7 @@
 		A00000000000000000000007 = {isa = PBXBuildFile; fileRef = B00000000000000000000008; };
 		A00000000000000000000008 = {isa = PBXBuildFile; fileRef = B00000000000000000000010; };
 		A00000000000000000000009 = {isa = PBXBuildFile; fileRef = B00000000000000000000011; };
+		A00000000000000000000010 = {isa = PBXBuildFile; fileRef = B00000000000000000000012; };
 		B00000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenIBKRApp.swift; sourceTree = "<group>"; };
 		B00000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProtocolModels.swift; sourceTree = "<group>"; };
 		B00000000000000000000003 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelperClient.swift; sourceTree = "<group>"; };
@@ -24,13 +25,14 @@
 		B00000000000000000000009 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OpenIBKRTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B00000000000000000000010 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelperProcessManager.swift; sourceTree = "<group>"; };
 		B00000000000000000000011 = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; path = "../packaging/dist/openibkr-helper"; sourceTree = "<group>"; };
+		B00000000000000000000012 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlpacaCredentialsStore.swift; sourceTree = "<group>"; };
 		C00000000000000000000001 = {isa = PBXGroup; children = (C00000000000000000000002, C00000000000000000000004, B00000000000000000000011, C00000000000000000000003); sourceTree = "<group>"; };
-		C00000000000000000000002 = {isa = PBXGroup; children = (B00000000000000000000001, B00000000000000000000002, B00000000000000000000003, B00000000000000000000010, B00000000000000000000004, B00000000000000000000005, B00000000000000000000006); path = OpenIBKR; sourceTree = "<group>"; };
+		C00000000000000000000002 = {isa = PBXGroup; children = (B00000000000000000000001, B00000000000000000000002, B00000000000000000000003, B00000000000000000000010, B00000000000000000000012, B00000000000000000000004, B00000000000000000000005, B00000000000000000000006); path = OpenIBKR; sourceTree = "<group>"; };
 		C00000000000000000000003 = {isa = PBXGroup; children = (B00000000000000000000007, B00000000000000000000009); name = Products; sourceTree = "<group>"; };
 		C00000000000000000000004 = {isa = PBXGroup; children = (B00000000000000000000008); path = OpenIBKRTests; sourceTree = "<group>"; };
 		D00000000000000000000001 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		D00000000000000000000002 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
-		D00000000000000000000003 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000001, A00000000000000000000002, A00000000000000000000003, A00000000000000000000008, A00000000000000000000004, A00000000000000000000005, A00000000000000000000006); runOnlyForDeploymentPostprocessing = 0; };
+		D00000000000000000000003 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000001, A00000000000000000000002, A00000000000000000000003, A00000000000000000000008, A00000000000000000000010, A00000000000000000000004, A00000000000000000000005, A00000000000000000000006); runOnlyForDeploymentPostprocessing = 0; };
 		D00000000000000000000004 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000007); runOnlyForDeploymentPostprocessing = 0; };
 		D00000000000000000000005 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		D00000000000000000000006 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };

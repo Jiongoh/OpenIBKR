@@ -25,26 +25,63 @@ enum DashboardLayout {
     }
 
     static func quoteListHeight(count: Int, isAddingSymbol: Bool) -> CGFloat {
-        let quoteCount = max(0, count)
-        let quoteHeight = CGFloat(quoteCount) * 48
-        let quoteSpacing = CGFloat(max(0, quoteCount - 1)) * 7
+        let quoteHeight = quoteRowsContentHeight(count: count)
         let inputHeight: CGFloat = isAddingSymbol ? 51 : 0
         return min(
             maximumWatchlistHeight,
-            max(44, 20 + quoteHeight + quoteSpacing + inputHeight)
+            max(44, 20 + quoteHeight + inputHeight)
         )
+    }
+
+    static func quoteRowsContentHeight(count: Int) -> CGFloat {
+        let quoteCount = max(0, count)
+        let quoteHeight = CGFloat(quoteCount) * 48
+        let quoteSpacing = CGFloat(max(0, quoteCount - 1)) * 7
+        return quoteHeight + quoteSpacing
+    }
+
+    static func quoteCountForLayout(current: Int, reserved: Int) -> Int {
+        max(0, max(current, reserved))
+    }
+
+    static func watchlistHeight(quoteCount: Int, reservesAddSymbolSpace: Bool) -> CGFloat {
+        if quoteCount == 0, !reservesAddSymbolSpace {
+            return emptyWatchlistHeight
+        }
+        let quoteHeight = quoteListHeight(
+            count: quoteCount,
+            isAddingSymbol: reservesAddSymbolSpace
+        )
+        return quoteCount == 0 ? max(emptyWatchlistHeight, quoteHeight) : quoteHeight
+    }
+
+    static func quoteViewportHeight(
+        quoteCount: Int,
+        reservesAddSymbolSpace: Bool
+    ) -> CGFloat {
+        let totalHeight = watchlistHeight(
+            quoteCount: quoteCount,
+            reservesAddSymbolSpace: reservesAddSymbolSpace
+        )
+        let inputAllocation: CGFloat = reservesAddSymbolSpace ? 51 : 0
+        return max(0, totalHeight - 20 - inputAllocation)
     }
 
     static func pnlHoverFrame(expanded: Bool) -> CGRect {
         CGRect(x: 0, y: 0, width: moduleWidth(expanded: expanded), height: pnlHeight)
     }
 
-    static func quoteHoverFrame(index: Int, expanded: Bool) -> CGRect {
+    static func quoteHoverFrame(
+        index: Int,
+        expanded: Bool,
+        includesAccessory: Bool = false
+    ) -> CGRect {
         let firstRowY = pnlHeight + moduleSpacing + 10
         return CGRect(
             x: 0,
             y: firstRowY + CGFloat(index) * 55,
-            width: moduleWidth(expanded: expanded),
+            width: moduleWidth(expanded: expanded)
+                + (includesAccessory ? watchlistAccessoryWidth : 0),
             height: 48
         )
     }
@@ -71,8 +108,12 @@ struct DashboardView: View {
     @State private var quoteHoverTarget: Int?
     @State private var isWatchlistExpanded: Bool
     @State private var isAddingSymbol: Bool
+    @State private var reservesAddSymbolSpace: Bool
+    @State private var symbolEntryGeneration = 0
     @State private var revealedQuoteCount: Int
     @State private var revealGeneration = 0
+    @State private var quoteLayoutCount: Int
+    @State private var quoteLayoutGeneration = 0
     @State private var activeQuoteID: Int?
     @FocusState private var isSymbolFieldFocused: Bool
     private let interfaceActiveOverride: Bool?
@@ -91,7 +132,9 @@ struct DashboardView: View {
         _isPnLExpanded = State(initialValue: initiallyExpanded)
         _isWatchlistExpanded = State(initialValue: watchlistInitiallyExpanded)
         _isAddingSymbol = State(initialValue: false)
+        _reservesAddSymbolSpace = State(initialValue: false)
         _revealedQuoteCount = State(initialValue: watchlistInitiallyExpanded ? .max : 0)
+        _quoteLayoutCount = State(initialValue: model.snapshot.quotes.count)
         _activeQuoteID = State(initialValue: nil)
     }
 
@@ -125,11 +168,38 @@ struct DashboardView: View {
                 reportVisibleSize(size)
             }
             .onChange(of: model.snapshot.quotes.count) { previousCount, currentCount in
-                guard currentCount > previousCount else { return }
-                withAnimation(.easeInOut(duration: 0.20)) {
-                    isAddingSymbol = false
-                    if revealedQuoteCount != .max {
-                        revealedQuoteCount = currentCount
+                quoteLayoutGeneration += 1
+                let generation = quoteLayoutGeneration
+
+                if currentCount > previousCount {
+                    withTransaction(Transaction(animation: nil)) {
+                        quoteLayoutCount = max(quoteLayoutCount, currentCount)
+                    }
+                    dismissAddSymbolInput(cancelEntry: false)
+                    withAnimation(.easeInOut(duration: 0.20)) {
+                        if revealedQuoteCount != .max {
+                            revealedQuoteCount = currentCount
+                        }
+                    }
+                    return
+                }
+
+                guard currentCount < previousCount else { return }
+
+                // Keep the old viewport and NSPanel height until SwiftUI has
+                // finished retracting the removed row. Shrinking either one
+                // in the same update clips the transition and looks like the
+                // card vanished instantly.
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(320))
+                    guard generation == quoteLayoutGeneration else { return }
+                    withTransaction(Transaction(animation: nil)) {
+                        quoteLayoutCount = model.snapshot.quotes.count
+                        if let activeQuoteID,
+                           !model.snapshot.quotes.contains(where: { $0.id == activeQuoteID })
+                        {
+                            self.activeQuoteID = nil
+                        }
                     }
                 }
             }
@@ -151,24 +221,40 @@ struct DashboardView: View {
                     + (model.symbolErrorMessage == nil ? 0 : 30)
             )
         }
-        if model.snapshot.quotes.isEmpty, !isAddingSymbol {
-            return DashboardLayout.emptyWatchlistHeight
-        }
-        return DashboardLayout.quoteListHeight(
-            count: model.snapshot.quotes.count,
-            isAddingSymbol: isAddingSymbol
+        return DashboardLayout.watchlistHeight(
+            quoteCount: quoteCountForLayout,
+            reservesAddSymbolSpace: reservesAddSymbolSpace
         )
+    }
+
+    private var quoteCountForLayout: Int {
+        DashboardLayout.quoteCountForLayout(
+            current: model.snapshot.quotes.count,
+            reserved: quoteLayoutCount
+        )
+    }
+
+    private var isQuoteRemovalSettling: Bool {
+        quoteCountForLayout > model.snapshot.quotes.count
+    }
+
+    private var quoteIDs: [Int] {
+        model.snapshot.quotes.map(\.id)
     }
 
     private var watchlistNeedsExpandedWidth: Bool {
         !model.contractCandidates.isEmpty
             || model.snapshot.quotes.isEmpty
             || isAddingSymbol
+            || reservesAddSymbolSpace
             || activeQuoteID != nil
     }
 
     private var watchlistHasAccessory: Bool {
-        !model.snapshot.quotes.isEmpty && !isAddingSymbol && model.contractCandidates.isEmpty
+        // Keep the 24pt rail reserved while the add-symbol row is entering or
+        // leaving. Dropping it at the same time as the input transition makes
+        // the list and NSPanel recalculate their width by one accessory rail.
+        quoteCountForLayout > 0 && model.contractCandidates.isEmpty
     }
 
     private var currentWatchlistWidth: CGFloat {
@@ -335,7 +421,17 @@ struct DashboardView: View {
     }
 
     private func quoteID(at location: CGPoint) -> Int? {
-        guard isWatchlistExpanded,
+        guard isWatchlistExpanded else { return nil }
+
+        // Clicking the add button necessarily starts from an expanded final
+        // row. Freeze that hover state while the input owns the reserved area;
+        // otherwise hiding the button makes the pointer fall outside the row
+        // and collapses it during the input's own transition.
+        if reservesAddSymbolSpace {
+            return activeQuoteID
+        }
+
+        guard
               model.contractCandidates.isEmpty,
               !model.snapshot.quotes.isEmpty
         else { return nil }
@@ -344,7 +440,12 @@ struct DashboardView: View {
             guard revealedQuoteCount == .max || index < revealedQuoteCount else { return false }
             return DashboardLayout.quoteHoverFrame(
                 index: index,
-                expanded: activeQuoteID == quote.id
+                expanded: activeQuoteID == quote.id,
+                // The add button moves with the final row's trailing edge.
+                // Keep its accessory rail inside the same hover target so the
+                // row cannot collapse while the pointer travels to the button.
+                includesAccessory: index == model.snapshot.quotes.count - 1
+                    && !isAddingSymbol
             ).contains(location)
         })?.element.id
     }
@@ -479,7 +580,10 @@ struct DashboardView: View {
         Group {
             if !model.contractCandidates.isEmpty {
                 contractCandidates
-            } else if model.snapshot.quotes.isEmpty, !isAddingSymbol {
+            } else if quoteCountForLayout == 0,
+                      !isAddingSymbol,
+                      !reservesAddSymbolSpace
+            {
                 emptyWatchlist
             } else {
                 quoteRows
@@ -489,13 +593,15 @@ struct DashboardView: View {
     }
 
     private var quoteRows: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 7) {
-                    ForEach(Array(model.snapshot.quotes.enumerated()), id: \.element.id) { index, quote in
+        VStack(alignment: .leading, spacing: 7) {
+            if quoteCountForLayout > 0 {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 7) {
+                        ForEach(Array(model.snapshot.quotes.enumerated()), id: \.element.id) { index, quote in
                             let expanded = activeQuoteID == quote.id
                             let quoteWidth = DashboardLayout.moduleWidth(expanded: expanded)
                             let revealed = index < revealedQuoteCount
+                            let isFinalQuote = index == model.snapshot.quotes.count - 1
 
                             HStack(spacing: 6) {
                                 quoteRow(quote, expanded: expanded)
@@ -503,65 +609,84 @@ struct DashboardView: View {
                                     .contentShape(rowShape)
 
                                 Group {
-                                    if index == model.snapshot.quotes.count - 1, !isAddingSymbol {
+                                    if isFinalQuote
+                                        && !isAddingSymbol
+                                        && !isQuoteRemovalSettling
+                                    {
                                         addSymbolButton
                                     } else {
                                         Color.clear
                                     }
                                 }
                                 .frame(width: 18, height: 24)
-                        }
-                        .frame(height: 48)
-                        .opacity(revealed ? 1 : 0)
-                        .offset(x: revealed ? 0 : -22)
-                        // Mask the final composited row so macOS glass,
-                        // stroke, shadow, and content retract together. The
-                        // material layer otherwise outlives the text opacity
-                        // and leaves a white rounded-rectangle afterimage.
-                        .mask(alignment: .leading) {
-                            Rectangle()
-                                .scaleEffect(
-                                    x: revealed ? 1 : 0,
-                                    y: 1,
-                                    anchor: .leading
-                                )
-                        }
-                        .animation(.smooth(duration: 0.26), value: revealedQuoteCount)
-                    }
-
-                    if isAddingSymbol {
-                        addSymbol
-                            .frame(minHeight: 44)
-                            .background(rowBackground, in: rowShape)
-                            .padding(.trailing, DashboardLayout.watchlistAccessoryWidth)
-                            .id("add-symbol-input")
+                            }
+                            .frame(height: 48)
+                            .opacity(revealed ? 1 : 0)
+                            .offset(x: revealed ? 0 : -22)
                             .transition(
-                                .move(edge: .leading)
-                                    .combined(with: .opacity)
-                                    .combined(with: .scale(scale: 0.97, anchor: .leading))
+                                .asymmetric(
+                                    insertion: .identity,
+                                    removal: .move(edge: .leading)
+                                        .combined(with: .opacity)
+                                        .combined(
+                                            with: .scale(scale: 0.94, anchor: .leading)
+                                        )
+                                )
                             )
+                            // Mask the final composited row so macOS glass,
+                            // stroke, shadow, and content retract together. The
+                            // material layer otherwise outlives the text opacity
+                            // and leaves a white rounded-rectangle afterimage.
+                            .mask(alignment: .leading) {
+                                Rectangle()
+                                    .scaleEffect(
+                                        x: revealed ? 1 : 0,
+                                        y: 1,
+                                        anchor: .leading
+                                    )
+                            }
+                            .animation(.smooth(duration: 0.26), value: revealedQuoteCount)
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .animation(.smooth(duration: 0.28), value: quoteIDs)
                 }
-                .padding(.vertical, 10)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(
+                    height: DashboardLayout.quoteViewportHeight(
+                        quoteCount: quoteCountForLayout,
+                        reservesAddSymbolSpace: reservesAddSymbolSpace
+                    ),
+                    alignment: .top
+                )
+                .scrollIndicators(.hidden)
+                .scrollClipDisabled()
             }
-            .scrollIndicators(.hidden)
-            .scrollClipDisabled()
-            .onChange(of: isAddingSymbol) { _, isAdding in
-                guard isAdding else { return }
-                withAnimation(.easeInOut(duration: 0.22)) {
-                    proxy.scrollTo("add-symbol-input", anchor: .bottom)
-                }
-                Task { @MainActor in
-                    await Task.yield()
-                    isSymbolFieldFocused = true
-                }
+
+            if isAddingSymbol {
+                addSymbol
+                    .frame(width: DashboardLayout.expandedModuleWidth)
+                    .frame(minHeight: 44)
+                    .openIBKRGlassCard(active: false, cornerRadius: 8)
+                    .contentShape(rowShape)
+                    .overlay {
+                        OutsideClickMonitor {
+                            dismissAddSymbolInput()
+                        }
+                    }
+                    .transition(
+                        .move(edge: .leading)
+                            .combined(with: .opacity)
+                            .combined(with: .scale(scale: 0.97, anchor: .leading))
+                    )
             }
-            .onChange(of: model.symbolErrorMessage) { _, error in
-                guard error != nil, isAddingSymbol else { return }
-                withAnimation(.easeInOut(duration: 0.22)) {
-                    proxy.scrollTo("add-symbol-input", anchor: .bottom)
-                }
+        }
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onChange(of: isAddingSymbol) { _, isAdding in
+            guard isAdding else { return }
+            Task { @MainActor in
+                await Task.yield()
+                isSymbolFieldFocused = true
             }
         }
     }
@@ -584,7 +709,20 @@ struct DashboardView: View {
                 .layoutPriority(1)
                 .foregroundStyle(modulePrimaryColor(active: expanded))
 
-            Spacer(minLength: expanded ? 8 : 3)
+            if expanded {
+                let trend = model.quoteTrends[quote.id] ?? []
+                QuoteSparkline(
+                    points: trend,
+                    color: quoteTrendColor(trend)
+                )
+                .frame(minWidth: 30, maxWidth: .infinity)
+                .frame(height: 20)
+                .opacity(trend.count >= 2 ? 1 : 0)
+                .accessibilityHidden(true)
+                .transition(.opacity.combined(with: .scale(scale: 0.94)))
+            } else {
+                Spacer(minLength: 3)
+            }
 
             VStack(alignment: .trailing, spacing: 2) {
                 Text(price(quote.displayPrice))
@@ -653,14 +791,6 @@ struct DashboardView: View {
         RoundedRectangle(cornerRadius: 8, style: .continuous)
     }
 
-    private var rowBackground: Color {
-        rowBackground(active: isInterfaceActive)
-    }
-
-    private func rowBackground(active: Bool) -> Color {
-        active ? Color.white.opacity(0.10) : Color.black.opacity(0.32)
-    }
-
     private var emptyWatchlist: some View {
         VStack(spacing: 8) {
             Button {
@@ -684,9 +814,14 @@ struct DashboardView: View {
     private var addSymbol: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
-                TextField("Add a U.S. stock symbol, e.g. AAPL", text: $model.symbolInput)
+                TextField(
+                    "",
+                    text: $model.symbolInput,
+                    prompt: Text("Ticker symbol, e.g. AAPL")
+                        .foregroundStyle(moduleSecondaryColor(active: false))
+                )
                     .textFieldStyle(.plain)
-                    .foregroundStyle(primaryInterfaceColor)
+                    .foregroundStyle(modulePrimaryColor(active: false))
                     .focused($isSymbolFieldFocused)
                     .onSubmit {
                         guard !model.isSearchingSymbol else { return }
@@ -704,7 +839,7 @@ struct DashboardView: View {
                 Button("Add") { model.addSymbol() }
                     .buttonStyle(.borderless)
                     .focusable(false)
-                    .foregroundStyle(secondaryInterfaceColor)
+                    .foregroundStyle(moduleSecondaryColor(active: false))
                     .keyboardShortcut(.return, modifiers: [.command])
                     .disabled(
                         model.isSearchingSymbol
@@ -729,17 +864,47 @@ struct DashboardView: View {
     }
 
     private func showAddSymbolInput() {
+        symbolEntryGeneration += 1
+        let generation = symbolEntryGeneration
         model.beginSymbolEntry()
-        withAnimation(.spring(duration: 0.30, bounce: 0.08)) {
-            isAddingSymbol = true
+
+        // Resize the transparent NSPanel first, without animating any visible
+        // content. Showing the row in a later frame prevents the panel resize,
+        // ScrollView insertion, and row transition from competing for layout.
+        withTransaction(Transaction(animation: nil)) {
+            reservesAddSymbolSpace = true
+        }
+
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(24))
+            guard generation == symbolEntryGeneration, reservesAddSymbolSpace else { return }
+            withAnimation(.spring(duration: 0.30, bounce: 0.08)) {
+                isAddingSymbol = true
+            }
         }
     }
 
-    private func dismissAddSymbolInput() {
+    private func dismissAddSymbolInput(cancelEntry: Bool = true) {
+        guard isAddingSymbol || reservesAddSymbolSpace else { return }
+        symbolEntryGeneration += 1
+        let generation = symbolEntryGeneration
+
         withAnimation(.easeInOut(duration: 0.18)) {
             isAddingSymbol = false
             isSymbolFieldFocused = false
+        }
+        if cancelEntry {
             model.cancelSymbolEntry()
+        }
+
+        // Keep the panel height fixed until the input row has completely
+        // retracted, then shrink the invisible window in one non-animated step.
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(220))
+            guard generation == symbolEntryGeneration, !isAddingSymbol else { return }
+            withTransaction(Transaction(animation: nil)) {
+                reservesAddSymbolSpace = false
+            }
         }
     }
 
@@ -952,6 +1117,14 @@ struct DashboardView: View {
         return .secondary
     }
 
+    private func quoteTrendColor(_ points: [QuoteTrendPoint]) -> Color {
+        switch QuoteTrendDirection.from(points) {
+        case .rising: .green
+        case .falling: .red
+        case .flat: Color.gray.opacity(0.78)
+        }
+    }
+
     private func quoteAccessibilityLabel(_ quote: QuoteSnapshot) -> String {
         let stale = quote.stale ? ", data is stale" : ""
         return "\(quote.instrument.symbol), price \(price(quote.displayPrice)), \(changeText(quote))\(stale)"
@@ -973,6 +1146,41 @@ struct DashboardView: View {
         if value.value > 0 { return .green }
         if value.value < 0 { return .red }
         return primaryInterfaceColor
+    }
+}
+
+private struct QuoteSparkline: View {
+    let points: [QuoteTrendPoint]
+    let color: Color
+
+    var body: some View {
+        GeometryReader { proxy in
+            Path { path in
+                guard points.count >= 2 else { return }
+                let values = points.map { NSDecimalNumber(decimal: $0.price.value).doubleValue }
+                guard let minimum = values.min(), let maximum = values.max() else { return }
+                let range = maximum - minimum
+                let width = proxy.size.width
+                let height = proxy.size.height
+
+                for (index, value) in values.enumerated() {
+                    let x = width * CGFloat(index) / CGFloat(values.count - 1)
+                    let normalized = range == 0 ? 0.5 : (value - minimum) / range
+                    let y = height - height * CGFloat(normalized)
+                    let point = CGPoint(x: x, y: y)
+                    if index == 0 {
+                        path.move(to: point)
+                    } else {
+                        path.addLine(to: point)
+                    }
+                }
+            }
+            .stroke(
+                color,
+                style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round)
+            )
+        }
+        .padding(.vertical, 2)
     }
 }
 
@@ -1027,6 +1235,89 @@ private struct WindowDragArea: NSViewRepresentable {
 
         override func mouseDown(with event: NSEvent) {
             window?.performDrag(with: event)
+        }
+    }
+}
+
+private struct OutsideClickMonitor: NSViewRepresentable {
+    let onOutsideClick: () -> Void
+
+    func makeNSView(context: Context) -> MonitoringView {
+        let view = MonitoringView()
+        view.onOutsideClick = onOutsideClick
+        return view
+    }
+
+    func updateNSView(_ nsView: MonitoringView, context: Context) {
+        nsView.onOutsideClick = onOutsideClick
+    }
+
+    static func dismantleNSView(_ nsView: MonitoringView, coordinator: ()) {
+        nsView.stopMonitoring()
+    }
+
+    final class MonitoringView: NSView {
+        var onOutsideClick: (() -> Void)?
+        private var localMonitor: Any?
+        private var globalMonitor: Any?
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            window == nil ? stopMonitoring() : startMonitoring()
+        }
+
+        func stopMonitoring() {
+            if let localMonitor {
+                NSEvent.removeMonitor(localMonitor)
+                self.localMonitor = nil
+            }
+            if let globalMonitor {
+                NSEvent.removeMonitor(globalMonitor)
+                self.globalMonitor = nil
+            }
+        }
+
+        private func startMonitoring() {
+            guard localMonitor == nil, globalMonitor == nil else { return }
+            let eventMask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown]
+
+            localMonitor = NSEvent.addLocalMonitorForEvents(matching: eventMask) {
+                [weak self] event in
+                self?.handleLocalMouseDown(event)
+                return event
+            }
+            globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: eventMask) {
+                [weak self] _ in
+                self?.notifyOutsideClick()
+            }
+        }
+
+        private func handleLocalMouseDown(_ event: NSEvent) {
+            guard let window else {
+                notifyOutsideClick()
+                return
+            }
+            guard event.window === window else {
+                notifyOutsideClick()
+                return
+            }
+
+            let localPoint = convert(event.locationInWindow, from: nil)
+            if !bounds.contains(localPoint) {
+                notifyOutsideClick()
+            }
+        }
+
+        private func notifyOutsideClick() {
+            DispatchQueue.main.async { [weak self] in
+                self?.onOutsideClick?()
+            }
+        }
+
+        deinit {
+            stopMonitoring()
         }
     }
 }

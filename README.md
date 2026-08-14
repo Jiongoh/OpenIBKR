@@ -15,6 +15,8 @@ trading capability.
 - Expands the P&L card on hover while keeping its top-left position stable.
 - Displays a collapsible watchlist with price, absolute change and percentage
   change.
+- Can optionally use Alpaca's official overnight market-data feed for indicative
+  quotes and compact 24-hour trend lines.
 - Uses compact inactive rows and expands individual quotes on hover.
 - Adds and removes US stock symbols without restarting the app.
 - Reports invalid or ambiguous symbols instead of creating zero-price rows.
@@ -38,6 +40,10 @@ OpenIBKR does **not** implement trading.
 - The Helper API uses a random local port and a one-time token that remains only
   in process memory.
 - The full account ID, IBKR credentials and 2FA material are never persisted.
+- Optional Alpaca Paper API credentials are stored only in the user's macOS
+  Keychain and passed to the Helper over its authenticated loopback channel.
+- Alpaca integration is hard-limited to two `GET` market-data routes on
+  `data.alpaca.markets`; no trading, order, position or account route exists.
 - Regulatory snapshots are disabled.
 
 These application safeguards are defense in depth. IB Gateway's own
@@ -94,6 +100,30 @@ notarization as described in the [release guide](docs/RELEASE.md).
 OpenIBKR defaults to the read-only Gateway adapter on port `4003`. Its Settings
 window also provides a deterministic Fake data source for UI development.
 
+## Optional Alpaca overnight quotes
+
+IBKR remains the source for account NAV and P&L. If an Alpaca Paper API key is
+configured, OpenIBKR uses Alpaca only for watchlist quotes during the U.S.
+overnight session (20:00–04:00 America/New_York, Sunday evening through Friday
+morning):
+
+1. Open the OpenIBKR menu-bar item and choose **Settings…**.
+2. Under **Alpaca Overnight Market Data**, enter the Paper API Key ID and Secret
+   Key, then choose **Save & Connect**.
+3. Confirm that the status reads **Alpaca Overnight · Active** during the
+   overnight session, or **Standby** outside it.
+
+Never put API keys in project files, terminal commands, screenshots, issues or
+Git commits. OpenIBKR stores them as device-local Keychain items and restores
+the market-data connection when its local Helper restarts. The displayed
+overnight price is an indicative bid/ask midpoint and may differ from an
+executable broker quote.
+
+OpenIBKR uses short-lived authenticated HTTPS `GET` requests for Alpaca data;
+it does not open an Alpaca WebSocket or consume the Basic plan's 30-symbol
+streaming subscription pool. The only WebSocket in the app is the authenticated
+`127.0.0.1` channel between the native UI and its bundled local Helper.
+
 ## Development and tests
 
 Run the Helper checks without connecting to IBKR:
@@ -124,6 +154,16 @@ entitlements, IBKR may return delayed, frozen or unavailable quotes; the UI
 preserves that classification rather than presenting unavailable values as a
 real price.
 
+When optional Alpaca credentials are configured, the overnight watchlist uses
+Alpaca's overnight indicative snapshot and BOATS minute bars. Historical bars
+may trail the current quote; OpenIBKR merges the newest indicative quote into
+the line and continues showing current quotes if historical bars are
+temporarily unavailable.
+
+Trend points and minute P&L samples are retained for 24 hours. A wall-clock
+cleanup runs every minute, including outside trading hours, and removed
+watchlist symbols have their local trend history discarded immediately.
+
 ## Architecture
 
 ```text
@@ -132,10 +172,11 @@ OpenIBKR.app (SwiftUI + AppKit)
         | token-authenticated HTTP/WebSocket on random 127.0.0.1 port
         v
 Bundled OpenIBKR Helper (Python)
-        |
-        | allowlisted read-only TWS API requests on 127.0.0.1:4003
-        v
-IB Gateway (Read-Only API enabled)
+        |                                      |
+        | allowlisted read-only TWS API        | allowlisted HTTPS GET only
+        | on 127.0.0.1:4003                    | (optional overnight quotes)
+        v                                      v
+IB Gateway (Read-Only API enabled)     data.alpaca.markets
 ```
 
 The Helper persists the watchlist and public latest snapshot in a local SQLite

@@ -9,8 +9,13 @@ from pathlib import Path
 
 from openibkr_helper.adapters.fake import FakeIBKRAdapter
 from openibkr_helper.config import HelperSettings
-from openibkr_helper.events import ConnectionEvent, QuoteEvent, QuoteResetEvent
-from openibkr_helper.models import ContractQuery, GatewayState, utc_now
+from openibkr_helper.events import (
+    ConnectionEvent,
+    QuoteEvent,
+    QuoteResetEvent,
+    QuoteTrendEvent,
+)
+from openibkr_helper.models import ContractQuery, GatewayState, QuoteTrendPoint, utc_now
 from openibkr_helper.service import HelperService, WatchlistFullError
 
 TOKEN = "service-test-token-that-is-at-least-32-characters"
@@ -114,6 +119,23 @@ class HelperServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(quote.close)
         self.assertIsNone(quote.received_at)
         self.assertTrue(quote.stale)
+
+    async def test_quote_trends_expire_against_wall_clock(self) -> None:
+        instrument = await self.service.add_watchlist(ContractQuery(symbol="AAPL"))
+        now = utc_now()
+        await self.service.store.apply(
+            QuoteTrendEvent(
+                instrument.con_id,
+                (
+                    QuoteTrendPoint(sampled_at=now - timedelta(hours=25), price=Decimal("99")),
+                    QuoteTrendPoint(sampled_at=now - timedelta(hours=1), price=Decimal("100")),
+                ),
+            )
+        )
+
+        self.assertTrue(await self.service.store.expire_quote_trends(now=now))
+        trend = (await self.service.snapshot()).quotes[0].trend
+        self.assertEqual([point.price for point in trend], [Decimal("100")])
 
     async def test_watchlist_restores_after_service_restart(self) -> None:
         instrument = await self.service.add_watchlist(ContractQuery(symbol="AAPL"))

@@ -7,11 +7,43 @@ from pathlib import Path
 from openibkr_helper.adapters.fake import FakeIBKRAdapter
 from openibkr_helper.api import create_app
 from openibkr_helper.config import HelperSettings
+from openibkr_helper.models import MarketDataStatus
 from openibkr_helper.service import HelperService
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 TOKEN = "api-test-token-that-is-at-least-32-characters"
+
+
+class StubMarketData:
+    def __init__(self) -> None:
+        self._status = MarketDataStatus()
+
+    async def start(self, sink) -> None:  # noqa: ANN001
+        self.sink = sink
+
+    async def stop(self) -> None:
+        pass
+
+    async def subscribe(self, instrument) -> None:  # noqa: ANN001
+        pass
+
+    async def unsubscribe(self, con_id: int) -> None:
+        pass
+
+    def should_override_quotes(self) -> bool:
+        return False
+
+    def status(self) -> MarketDataStatus:
+        return self._status
+
+    async def configure(self, credentials) -> MarketDataStatus:  # noqa: ANN001
+        self._status = MarketDataStatus(provider="alpaca_overnight", configured=True, active=True)
+        return self._status
+
+    async def clear(self) -> MarketDataStatus:
+        self._status = MarketDataStatus()
+        return self._status
 
 
 class HelperAPITests(unittest.TestCase):
@@ -22,7 +54,8 @@ class HelperAPITests(unittest.TestCase):
             database_path=Path(self.temp.name) / "openibkr.sqlite3",
         )
         self.adapter = FakeIBKRAdapter(tick_interval=60.0)
-        self.service = HelperService(settings, self.adapter)
+        self.market_data = StubMarketData()
+        self.service = HelperService(settings, self.adapter, market_data=self.market_data)
         self.client_context = TestClient(create_app(self.service))
         self.client = self.client_context.__enter__()
         self.headers = {"Authorization": f"Bearer {TOKEN}"}
@@ -35,6 +68,14 @@ class HelperAPITests(unittest.TestCase):
         self.assertEqual(self.client.get("/v1/health").status_code, 401)
         self.assertEqual(self.client.get("/v1/snapshot").status_code, 401)
         self.assertEqual(self.client.get("/v1/watchlist").status_code, 401)
+        self.assertEqual(self.client.get("/v1/market-data/status").status_code, 401)
+        self.assertEqual(
+            self.client.post(
+                "/v1/market-data/alpaca/credentials",
+                json={"key_id": "PKTEST123456", "secret_key": "secret-credential-value"},
+            ).status_code,
+            401,
+        )
         self.assertEqual(
             self.client.post("/v1/contracts/search", json={"symbol": "AAPL"}).status_code,
             401,
@@ -63,6 +104,22 @@ class HelperAPITests(unittest.TestCase):
         self.assertEqual(deleted.status_code, 204)
         missing = self.client.delete(f"/v1/watchlist/{con_id}", headers=self.headers)
         self.assertEqual(missing.status_code, 404)
+
+    def test_alpaca_credentials_are_memory_only_and_authenticated(self) -> None:
+        configured = self.client.post(
+            "/v1/market-data/alpaca/credentials",
+            json={
+                "key_id": "PKTEST123456",
+                "secret_key": "secret-credential-value",
+            },
+            headers=self.headers,
+        )
+        self.assertEqual(configured.status_code, 200)
+        self.assertTrue(configured.json()["configured"])
+        status = self.client.get("/v1/market-data/status", headers=self.headers)
+        self.assertEqual(status.json()["provider"], "alpaca_overnight")
+        cleared = self.client.delete("/v1/market-data/alpaca/credentials", headers=self.headers)
+        self.assertFalse(cleared.json()["configured"])
 
     def test_websocket_requires_header_and_starts_with_snapshot(self) -> None:
         with self.assertRaises(WebSocketDisconnect):

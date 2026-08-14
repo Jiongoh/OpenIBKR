@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import threading
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .models import AppSnapshot, Instrument
@@ -227,12 +227,12 @@ class Database:
             return None
         return AppSnapshot.model_validate_json(row["payload_json"])
 
-    def save_pnl_minute(self, snapshot: AppSnapshot, *, retention_days: int = 30) -> bool:
+    def save_pnl_minute(self, snapshot: AppSnapshot, *, retention_hours: int = 24) -> bool:
         received_at = snapshot.pnl.received_at
         if received_at is None or snapshot.pnl.stale:
             return False
         bucket = received_at.replace(second=0, microsecond=0)
-        cutoff = bucket - timedelta(days=retention_days)
+        cutoff = bucket - timedelta(hours=retention_hours)
         connection = self._require_connection()
         with self._lock, connection:
             cursor = connection.execute(
@@ -254,6 +254,21 @@ class Database:
                 (cutoff.isoformat(),),
             )
             return cursor.rowcount > 0
+
+    def prune_pnl_minute(
+        self,
+        *,
+        retention_hours: int = 24,
+        now: datetime | None = None,
+    ) -> int:
+        cutoff = (now or datetime.now(UTC)) - timedelta(hours=retention_hours)
+        connection = self._require_connection()
+        with self._lock, connection:
+            cursor = connection.execute(
+                "DELETE FROM pnl_minute_samples WHERE bucket_at < ?",
+                (cutoff.isoformat(),),
+            )
+            return cursor.rowcount
 
     def pnl_minute_count(self) -> int:
         connection = self._require_connection()

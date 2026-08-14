@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -141,6 +141,23 @@ class DatabaseTests(unittest.TestCase):
         self.assertTrue(self.database.save_pnl_minute(snapshot))
         self.assertFalse(self.database.save_pnl_minute(snapshot))
         self.assertEqual(self.database.pnl_minute_count(), 1)
+
+    def test_pnl_minute_samples_expire_after_twenty_four_hours(self) -> None:
+        self.database.open()
+        now = datetime(2026, 8, 14, 7, 0, tzinfo=UTC)
+        old_snapshot = AppSnapshot(
+            account=AccountSnapshot(currency="USD", stale=False),
+            pnl=PnLSnapshot(
+                daily=Decimal("1.00"),
+                received_at=now - timedelta(hours=25),
+                stale=False,
+            ),
+        )
+        self.assertTrue(self.database.save_pnl_minute(old_snapshot))
+        self.assertEqual(self.database.pnl_minute_count(), 1)
+
+        self.assertEqual(self.database.prune_pnl_minute(now=now), 1)
+        self.assertEqual(self.database.pnl_minute_count(), 0)
 
 
 if __name__ == "__main__":
