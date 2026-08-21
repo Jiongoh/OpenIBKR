@@ -25,6 +25,156 @@ final class ProtocolModelsTests: XCTestCase {
         XCTAssertEqual(expanded.height, 396)
     }
 
+    @MainActor
+    func testFloatingPanelExpansionKeepsTopCenterAnchorFixed() {
+        let original = NSRect(x: 120, y: 300, width: 548, height: 34)
+        let expanded = FloatingPanelController.frameKeepingTopCenter(
+            original,
+            targetSize: NSSize(width: 548, height: 162)
+        )
+
+        XCTAssertEqual(expanded.midX, original.midX)
+        XCTAssertEqual(expanded.maxY, original.maxY)
+        XCTAssertEqual(expanded.width, 548)
+        XCTAssertEqual(expanded.height, 162)
+    }
+
+    @MainActor
+    func testCollapsedPanelFrameStaysFullyInsideTopOfScreen() {
+        let screen = NSRect(x: 0, y: 0, width: 1920, height: 1050)
+        let targetSize = NSSize(width: 548, height: 34)
+        let frame = FloatingPanelController.frameAtTopCenter(
+            of: screen,
+            targetSize: targetSize
+        )
+
+        XCTAssertEqual(frame.midX, screen.midX)
+        XCTAssertEqual(frame.maxY, screen.maxY)
+        XCTAssertGreaterThanOrEqual(frame.minY, screen.minY)
+        XCTAssertTrue(screen.contains(frame))
+    }
+
+    func testDynamicIslandKeepsDrawerWidthConstantAcrossStates() {
+        XCTAssertEqual(DashboardLayout.collapsedIslandSize, CGSize(width: 520, height: 20))
+        XCTAssertEqual(DashboardLayout.expandedIslandSize, CGSize(width: 520, height: 148))
+        XCTAssertEqual(
+            DashboardLayout.collapsedIslandSize.width,
+            DashboardLayout.expandedIslandSize.width
+        )
+        XCTAssertLessThan(
+            DashboardLayout.collapsedIslandSize.height,
+            DashboardLayout.expandedIslandSize.height
+        )
+    }
+
+    func testPointerTrackingUsesVisibleDrawerAndIncludesScreenTopEdge() {
+        let compactWindow = CGRect(x: 120, y: 1016, width: 548, height: 34)
+        let trackingRect = DashboardLayout.pointerTrackingRect(
+            windowFrame: compactWindow,
+            expanded: false
+        )
+
+        XCTAssertEqual(trackingRect.width, 520)
+        XCTAssertEqual(trackingRect.height, DashboardLayout.drawerLipDepth)
+        XCTAssertEqual(trackingRect.maxY, compactWindow.maxY)
+        XCTAssertTrue(
+            DashboardLayout.pointerIsInside(
+                CGPoint(x: trackingRect.midX, y: trackingRect.maxY),
+                trackingRect: trackingRect
+            )
+        )
+        XCTAssertFalse(
+            DashboardLayout.pointerIsInside(
+                CGPoint(x: trackingRect.midX, y: trackingRect.minY - 1),
+                trackingRect: trackingRect
+            )
+        )
+        XCTAssertFalse(
+            DashboardLayout.pointerIsInside(
+                CGPoint(x: trackingRect.minX - 1, y: trackingRect.midY),
+                trackingRect: trackingRect
+            )
+        )
+    }
+
+    func testWatchlistSelectionWrapsInBothDirectionsAndHandlesEmptyLists() {
+        XCTAssertEqual(
+            IslandWatchlistSelection.wrappedIndex(current: 4, offset: 1, count: 5),
+            0
+        )
+        XCTAssertEqual(
+            IslandWatchlistSelection.wrappedIndex(current: 0, offset: -1, count: 5),
+            4
+        )
+        XCTAssertNil(IslandWatchlistSelection.wrappedIndex(current: 0, offset: 1, count: 0))
+    }
+
+    func testScrollGestureGateSwitchesOnceAndIgnoresMomentum() {
+        var gate = IslandScrollGestureGate(threshold: 20, discreteGestureGap: 0.24)
+
+        XCTAssertNil(
+            gate.consume(
+                IslandScrollSample(
+                    deltaY: -8,
+                    phase: .began,
+                    momentumPhase: [],
+                    timestamp: 1
+                )
+            )
+        )
+        XCTAssertEqual(
+            gate.consume(
+                IslandScrollSample(
+                    deltaY: -14,
+                    phase: .changed,
+                    momentumPhase: [],
+                    timestamp: 1.02
+                )
+            ),
+            1
+        )
+        XCTAssertNil(
+            gate.consume(
+                IslandScrollSample(
+                    deltaY: -40,
+                    phase: .changed,
+                    momentumPhase: [],
+                    timestamp: 1.04
+                )
+            )
+        )
+        XCTAssertNil(
+            gate.consume(
+                IslandScrollSample(
+                    deltaY: -40,
+                    phase: [],
+                    momentumPhase: .began,
+                    timestamp: 1.06
+                )
+            )
+        )
+
+        _ = gate.consume(
+            IslandScrollSample(
+                deltaY: 0,
+                phase: .ended,
+                momentumPhase: [],
+                timestamp: 1.08
+            )
+        )
+        XCTAssertEqual(
+            gate.consume(
+                IslandScrollSample(
+                    deltaY: 24,
+                    phase: .began,
+                    momentumPhase: [],
+                    timestamp: 2
+                )
+            ),
+            -1
+        )
+    }
+
     func testPnLAndWatchlistUseIdenticalWidths() {
         XCTAssertEqual(
             DashboardLayout.moduleWidth(expanded: false),

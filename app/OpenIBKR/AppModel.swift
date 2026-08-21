@@ -96,6 +96,9 @@ final class AppModel: ObservableObject {
     private let trendDefaults: UserDefaults
     private let credentialsStore: AlpacaCredentialsStore
     private let trendDefaultsKey = "openibkr.quote-trends.v1"
+    private let legacyKeychainMarker = "openibkr.keychain-access.v1"
+    private var didLoadStoredAlpacaCredentials = false
+    private var storedAlpacaCredentials: AlpacaCredentials?
 
     init(
         defaults: UserDefaults = .standard,
@@ -114,9 +117,6 @@ final class AppModel: ObservableObject {
             decoded = [:]
         }
         _quoteTrends = Published(initialValue: decoded.filter { !$0.value.isEmpty })
-        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
-            hasAlpacaCredentials = (try? credentialsStore.load()) != nil
-        }
     }
 
     var endpointDescription: String {
@@ -139,6 +139,9 @@ final class AppModel: ObservableObject {
     func saveAlpacaCredentials(keyID: String, secretKey: String) async throws {
         let credentials = AlpacaCredentials(keyID: keyID, secretKey: secretKey)
         try credentialsStore.save(credentials)
+        trendDefaults.removeObject(forKey: legacyKeychainMarker)
+        storedAlpacaCredentials = credentials
+        didLoadStoredAlpacaCredentials = true
         hasAlpacaCredentials = true
         alpacaCredentialMessage = "Saved securely in macOS Keychain"
         guard let endpoint else { return }
@@ -150,6 +153,8 @@ final class AppModel: ObservableObject {
 
     func removeAlpacaCredentials() async throws {
         try credentialsStore.delete()
+        storedAlpacaCredentials = nil
+        didLoadStoredAlpacaCredentials = true
         hasAlpacaCredentials = false
         alpacaCredentialMessage = "Alpaca credentials removed"
         guard let endpoint else { return }
@@ -395,13 +400,33 @@ final class AppModel: ObservableObject {
     }
 
     private func injectStoredAlpacaCredentials() async {
-        do {
-            guard let credentials = try credentialsStore.load() else {
+        if !didLoadStoredAlpacaCredentials {
+            didLoadStoredAlpacaCredentials = true
+            let store = credentialsStore
+            do {
+                storedAlpacaCredentials = try await Task.detached(priority: .utility) {
+                    try store.load()
+                }.value
+                hasAlpacaCredentials = storedAlpacaCredentials != nil
+                if storedAlpacaCredentials == nil,
+                   trendDefaults.bool(forKey: legacyKeychainMarker)
+                {
+                    alpacaCredentialMessage =
+                        "Keychain storage was upgraded. Re-enter Alpaca credentials once in Settings."
+                }
+            } catch {
+                storedAlpacaCredentials = nil
                 hasAlpacaCredentials = false
+                alpacaCredentialMessage = error.localizedDescription
                 return
             }
-            hasAlpacaCredentials = true
-            guard let endpoint else { return }
+        }
+
+        guard let credentials = storedAlpacaCredentials,
+              let endpoint
+        else { return }
+
+        do {
             let status = try await HelperClient(endpoint: endpoint).configureAlpaca(
                 credentials: credentials
             )

@@ -2,22 +2,58 @@ import AppKit
 import SwiftUI
 
 enum DashboardLayout {
+    static let shadowPadding: CGFloat = 14
+    static let collapsedIslandSize = CGSize(width: 520, height: 20)
+    static let expandedIslandSize = CGSize(width: 520, height: 148)
+    static let drawerLipDepth: CGFloat = 14
+    static let expandedTopShoulderDepth: CGFloat = 5
+    static let islandAnimation = Animation.spring(
+        response: 0.42,
+        dampingFraction: 0.86,
+        blendDuration: 0.08
+    )
+
+    // Kept as pure geometry helpers for the existing layout tests and for
+    // callers that still reference the former dashboard module metrics.
     static let pnlHeight: CGFloat = 52
     static let maximumWatchlistHeight: CGFloat = 284
     static let moduleSpacing: CGFloat = 12
-    static let shadowPadding: CGFloat = 12
     static let watchlistAccessoryWidth: CGFloat = 24
     static let pnlDragButtonExclusionWidth: CGFloat = 34
-    static let cardCornerRadius: CGFloat = 10
     static let collapsedPnLWidth: CGFloat = 117
     static let expandedModuleWidth: CGFloat = 243
     static let emptyWatchlistHeight: CGFloat = 96
 
     static var initialContentSize: CGSize {
-        CGSize(
-            width: expandedModuleWidth + shadowPadding * 2,
-            height: pnlHeight + moduleSpacing + emptyWatchlistHeight + shadowPadding * 2
+        contentSize(expanded: false)
+    }
+
+    static func contentSize(expanded: Bool) -> CGSize {
+        let islandSize = expanded ? expandedIslandSize : collapsedIslandSize
+        return CGSize(
+            width: islandSize.width + shadowPadding * 2,
+            height: islandSize.height + shadowPadding
         )
+    }
+
+    static func pointerTrackingRect(windowFrame: CGRect, expanded: Bool) -> CGRect {
+        let islandSize = expanded ? expandedIslandSize : collapsedIslandSize
+        let visibleHeight = expanded ? islandSize.height : drawerLipDepth
+        return CGRect(
+            x: windowFrame.midX - islandSize.width / 2,
+            y: windowFrame.maxY - visibleHeight,
+            width: islandSize.width,
+            height: visibleHeight
+        )
+    }
+
+    static func pointerIsInside(_ point: CGPoint, trackingRect: CGRect) -> Bool {
+        // CGRect.contains excludes maxX/maxY. The drawer touches the physical
+        // top of the screen, so its top edge must remain an active boundary.
+        point.x >= trackingRect.minX
+            && point.x <= trackingRect.maxX
+            && point.y >= trackingRect.minY
+            && point.y <= trackingRect.maxY
     }
 
     static func moduleWidth(expanded: Bool) -> CGFloat {
@@ -27,17 +63,12 @@ enum DashboardLayout {
     static func quoteListHeight(count: Int, isAddingSymbol: Bool) -> CGFloat {
         let quoteHeight = quoteRowsContentHeight(count: count)
         let inputHeight: CGFloat = isAddingSymbol ? 51 : 0
-        return min(
-            maximumWatchlistHeight,
-            max(44, 20 + quoteHeight + inputHeight)
-        )
+        return min(maximumWatchlistHeight, max(44, 20 + quoteHeight + inputHeight))
     }
 
     static func quoteRowsContentHeight(count: Int) -> CGFloat {
         let quoteCount = max(0, count)
-        let quoteHeight = CGFloat(quoteCount) * 48
-        let quoteSpacing = CGFloat(max(0, quoteCount - 1)) * 7
-        return quoteHeight + quoteSpacing
+        return CGFloat(quoteCount) * 48 + CGFloat(max(0, quoteCount - 1)) * 7
     }
 
     static func quoteCountForLayout(current: Int, reserved: Int) -> Int {
@@ -45,9 +76,7 @@ enum DashboardLayout {
     }
 
     static func watchlistHeight(quoteCount: Int, reservesAddSymbolSpace: Bool) -> CGFloat {
-        if quoteCount == 0, !reservesAddSymbolSpace {
-            return emptyWatchlistHeight
-        }
+        if quoteCount == 0, !reservesAddSymbolSpace { return emptyWatchlistHeight }
         let quoteHeight = quoteListHeight(
             count: quoteCount,
             isAddingSymbol: reservesAddSymbolSpace
@@ -92,207 +121,301 @@ enum DashboardLayout {
     }
 }
 
+enum IslandWatchlistSelection {
+    static func wrappedIndex(current: Int, offset: Int, count: Int) -> Int? {
+        guard count > 0 else { return nil }
+        return (current + offset % count + count) % count
+    }
+}
+
+struct IslandScrollSample {
+    let deltaY: CGFloat
+    let phase: NSEvent.Phase
+    let momentumPhase: NSEvent.Phase
+    let timestamp: TimeInterval
+}
+
+struct PointerTrackingSample {
+    let screenLocation: CGPoint
+    let isInside: Bool
+}
+
+struct IslandScrollGestureGate {
+    private(set) var accumulator: CGFloat = 0
+    private(set) var hasSteppedInGesture = false
+    private var lastEventTimestamp = -Double.infinity
+
+    let threshold: CGFloat
+    let discreteGestureGap: TimeInterval
+
+    init(threshold: CGFloat = 22, discreteGestureGap: TimeInterval = 0.24) {
+        self.threshold = threshold
+        self.discreteGestureGap = discreteGestureGap
+    }
+
+    mutating func consume(_ sample: IslandScrollSample) -> Int? {
+        if !sample.momentumPhase.isEmpty {
+            if sample.momentumPhase.contains(.ended)
+                || sample.momentumPhase.contains(.cancelled)
+            {
+                reset()
+            }
+            lastEventTimestamp = sample.timestamp
+            return nil
+        }
+
+        if sample.phase.contains(.began)
+            || (sample.phase.isEmpty
+                && sample.timestamp - lastEventTimestamp > discreteGestureGap)
+        {
+            reset()
+        }
+
+        lastEventTimestamp = sample.timestamp
+        let endsGesture = sample.phase.contains(.ended) || sample.phase.contains(.cancelled)
+        defer {
+            if endsGesture { reset() }
+        }
+
+        guard !hasSteppedInGesture else { return nil }
+        accumulator += sample.deltaY
+        guard abs(accumulator) >= threshold else { return nil }
+
+        hasSteppedInGesture = true
+        let direction = accumulator < 0 ? 1 : -1
+        accumulator = 0
+        return direction
+    }
+
+    mutating func reset() {
+        accumulator = 0
+        hasSteppedInGesture = false
+    }
+}
+
+private struct DrawerRevealShape: Shape {
+    var expansion: CGFloat
+
+    var animatableData: CGFloat {
+        get { expansion }
+        set { expansion = newValue }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        let progress = min(1, max(0, expansion))
+        let visibleHeight = DashboardLayout.drawerLipDepth
+            + (rect.height - DashboardLayout.drawerLipDepth) * progress
+        let cornerRadius = min(28 * progress, visibleHeight / 2)
+        let bodyInset = min(
+            DashboardLayout.expandedTopShoulderDepth * progress,
+            visibleHeight / 2
+        )
+        let rightSideX = rect.maxX - bodyInset
+        let leftSideX = rect.minX + bodyInset
+        let rightEdgeBottom = CGPoint(
+            x: rightSideX,
+            y: rect.minY + (visibleHeight - cornerRadius) * progress
+        )
+        let rightBottom = CGPoint(
+            x: rect.midX
+                + (rightSideX - cornerRadius - rect.midX) * progress,
+            y: rect.minY + visibleHeight
+        )
+        let leftBottom = CGPoint(
+            x: rect.midX
+                + (leftSideX + cornerRadius - rect.midX) * progress,
+            y: rightBottom.y
+        )
+        let leftEdgeBottom = CGPoint(
+            x: leftSideX,
+            y: rightEdgeBottom.y
+        )
+
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.addCurve(
+            to: CGPoint(x: rightSideX, y: rect.minY + bodyInset),
+            control1: CGPoint(
+                x: rect.maxX,
+                y: rect.minY + bodyInset * 0.35
+            ),
+            control2: CGPoint(
+                x: rightSideX,
+                y: rect.minY + bodyInset * 0.65
+            )
+        )
+        path.addLine(to: rightEdgeBottom)
+        path.addCurve(
+            to: rightBottom,
+            control1: CGPoint(
+                x: rightSideX - rect.width * 0.16 * (1 - progress),
+                y: rect.minY + visibleHeight * progress
+            ),
+            control2: CGPoint(
+                x: rect.midX + rect.width * 0.24
+                    + (rightSideX - cornerRadius - rect.midX - rect.width * 0.24)
+                        * progress,
+                y: rect.minY + visibleHeight
+            )
+        )
+        path.addLine(to: leftBottom)
+        path.addCurve(
+            to: leftEdgeBottom,
+            control1: CGPoint(
+                x: rect.midX - rect.width * 0.24
+                    + (leftSideX + cornerRadius - rect.midX + rect.width * 0.24)
+                        * progress,
+                y: rect.minY + visibleHeight
+            ),
+            control2: CGPoint(
+                x: leftSideX + rect.width * 0.16 * (1 - progress),
+                y: rect.minY + visibleHeight * progress
+            )
+        )
+        path.addLine(
+            to: CGPoint(x: leftSideX, y: rect.minY + bodyInset)
+        )
+        path.addCurve(
+            to: CGPoint(x: rect.minX, y: rect.minY),
+            control1: CGPoint(
+                x: leftSideX,
+                y: rect.minY + bodyInset * 0.65
+            ),
+            control2: CGPoint(
+                x: rect.minX,
+                y: rect.minY + bodyInset * 0.35
+            )
+        )
+        path.closeSubpath()
+        return path
+    }
+}
+
 struct DashboardView: View {
     @ObservedObject var model: AppModel
-    @Environment(\.appearsActive) private var appearsActive
-    @State private var isPnLExpanded: Bool
-    @State private var isPointerInside = false
-    @State private var interfaceHoverGeneration = 0
-    @State private var pnlHoverGeneration = 0
-    @State private var quoteHoverGeneration = 0
-    @State private var hoverSessionGeneration = 0
-    @State private var hoverSessionTargetActive = false
-    @State private var usesStableHoverWidth = false
-    @State private var interfaceHoverTarget = false
-    @State private var pnlHoverTarget = false
-    @State private var quoteHoverTarget: Int?
-    @State private var isWatchlistExpanded: Bool
-    @State private var isAddingSymbol: Bool
-    @State private var reservesAddSymbolSpace: Bool
-    @State private var symbolEntryGeneration = 0
-    @State private var revealedQuoteCount: Int
-    @State private var revealGeneration = 0
-    @State private var quoteLayoutCount: Int
-    @State private var quoteLayoutGeneration = 0
-    @State private var activeQuoteID: Int?
-    @FocusState private var isSymbolFieldFocused: Bool
+    private let initiallyExpanded: Bool
     private let interfaceActiveOverride: Bool?
     private let onVisibleSizeChanged: ((CGSize) -> Void)?
+    private let onExpandedStateChanged: ((Bool) -> Void)?
 
     init(
         model: AppModel,
         initiallyExpanded: Bool = false,
         interfaceActiveOverride: Bool? = nil,
         watchlistInitiallyExpanded: Bool = true,
-        onVisibleSizeChanged: ((CGSize) -> Void)? = nil
+        onVisibleSizeChanged: ((CGSize) -> Void)? = nil,
+        onExpandedStateChanged: ((Bool) -> Void)? = nil
+    ) {
+        self.model = model
+        self.initiallyExpanded = initiallyExpanded
+        self.interfaceActiveOverride = interfaceActiveOverride
+        self.onVisibleSizeChanged = onVisibleSizeChanged
+        self.onExpandedStateChanged = onExpandedStateChanged
+        _ = watchlistInitiallyExpanded
+    }
+
+    var body: some View {
+        DynamicIslandView(
+            model: model,
+            initiallyExpanded: initiallyExpanded,
+            interfaceActiveOverride: interfaceActiveOverride,
+            onVisibleSizeChanged: onVisibleSizeChanged,
+            onExpandedStateChanged: onExpandedStateChanged
+        )
+    }
+}
+
+private struct DynamicIslandView: View {
+    @ObservedObject var model: AppModel
+
+    @State private var isExpanded: Bool
+    @State private var selectedQuoteID: Int?
+    @State private var hoverGeneration = 0
+    @State private var isPointerInside = false
+    @State private var lastPointerLocation: CGPoint?
+    @State private var suppressReactivationUntilPointerMoves = false
+    @State private var scrollGate = IslandScrollGestureGate()
+    @State private var isAddingSymbol = false
+    @FocusState private var isSymbolFieldFocused: Bool
+
+    private let interfaceActiveOverride: Bool?
+    private let onVisibleSizeChanged: ((CGSize) -> Void)?
+    private let onExpandedStateChanged: ((Bool) -> Void)?
+
+    init(
+        model: AppModel,
+        initiallyExpanded: Bool = false,
+        interfaceActiveOverride: Bool? = nil,
+        onVisibleSizeChanged: ((CGSize) -> Void)? = nil,
+        onExpandedStateChanged: ((Bool) -> Void)? = nil
     ) {
         self.model = model
         self.interfaceActiveOverride = interfaceActiveOverride
         self.onVisibleSizeChanged = onVisibleSizeChanged
-        _isPnLExpanded = State(initialValue: initiallyExpanded)
-        _isWatchlistExpanded = State(initialValue: watchlistInitiallyExpanded)
-        _isAddingSymbol = State(initialValue: false)
-        _reservesAddSymbolSpace = State(initialValue: false)
-        _revealedQuoteCount = State(initialValue: watchlistInitiallyExpanded ? .max : 0)
-        _quoteLayoutCount = State(initialValue: model.snapshot.quotes.count)
-        _activeQuoteID = State(initialValue: nil)
+        self.onExpandedStateChanged = onExpandedStateChanged
+        _isExpanded = State(initialValue: initiallyExpanded)
+        _selectedQuoteID = State(initialValue: model.snapshot.quotes.first?.id)
     }
 
     var body: some View {
-        modules
-            .frame(width: currentModulesWidth, height: currentModulesHeight, alignment: .topLeading)
-            // Treat the visible module bounds, including the inter-card gap,
-            // as one continuous hover region. Without this shape SwiftUI only
-            // hit-tests the rendered cards, so crossing the transparent gap
-            // repeatedly toggles the inactive appearance.
-            .contentShape(Rectangle())
-            .overlay {
-                PointerTrackingView { location in
-                    if let location {
-                        updateHoverTargets(at: location)
-                    } else {
-                        endHoverSession()
-                    }
-                }
+        ZStack(alignment: .top) {
+            island
+                .padding(.horizontal, DashboardLayout.shadowPadding)
+                .padding(.bottom, DashboardLayout.shadowPadding)
+                .frame(
+                    width: currentContentSize.width,
+                    height: currentContentSize.height,
+                    alignment: .top
+                )
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .overlay {
+            // Track the whole transparent panel, rather than the animated
+            // island layer. The visual state is passed separately because
+            // the panel can keep its expanded frame until collapse finishes.
+            PointerTrackingView(isExpanded: isExpanded) { sample in
+                handlePointerSample(sample)
             }
-            .padding(DashboardLayout.shadowPadding)
-            .frame(
-                width: currentContentSize.width,
-                height: currentContentSize.height,
-                alignment: .topLeading
-            )
-            .onAppear {
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .allowsHitTesting(false)
+        }
+        .onAppear {
+                reconcileSelectedQuote()
+                onExpandedStateChanged?(isExpanded)
                 reportVisibleSize(currentContentSize)
             }
             .onChange(of: currentContentSize) { _, size in
                 reportVisibleSize(size)
             }
-            .onChange(of: model.snapshot.quotes.count) { previousCount, currentCount in
-                quoteLayoutGeneration += 1
-                let generation = quoteLayoutGeneration
-
-                if currentCount > previousCount {
-                    withTransaction(Transaction(animation: nil)) {
-                        quoteLayoutCount = max(quoteLayoutCount, currentCount)
-                    }
-                    dismissAddSymbolInput(cancelEntry: false)
-                    withAnimation(.easeInOut(duration: 0.20)) {
-                        if revealedQuoteCount != .max {
-                            revealedQuoteCount = currentCount
-                        }
-                    }
-                    return
+            .onChange(of: isExpanded) { _, expanded in
+                onExpandedStateChanged?(expanded)
+            }
+            .onChange(of: quoteIDs) { previousIDs, currentIDs in
+                reconcileSelectedQuote()
+                guard currentIDs.count > previousIDs.count else { return }
+                if let addedID = currentIDs.first(where: { !previousIDs.contains($0) }) {
+                    selectedQuoteID = addedID
                 }
-
-                guard currentCount < previousCount else { return }
-
-                // Keep the old viewport and NSPanel height until SwiftUI has
-                // finished retracting the removed row. Shrinking either one
-                // in the same update clips the transition and looks like the
-                // card vanished instantly.
+                dismissAddSymbolInput(cancelEntry: false)
+            }
+            .onChange(of: isAddingSymbol) { _, adding in
+                guard adding else { return }
                 Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(320))
-                    guard generation == quoteLayoutGeneration else { return }
-                    withTransaction(Transaction(animation: nil)) {
-                        quoteLayoutCount = model.snapshot.quotes.count
-                        if let activeQuoteID,
-                           !model.snapshot.quotes.contains(where: { $0.id == activeQuoteID })
-                        {
-                            self.activeQuoteID = nil
-                        }
-                    }
+                    await Task.yield()
+                    isSymbolFieldFocused = true
                 }
             }
-            .onChange(of: isSymbolFieldFocused) { wasFocused, isFocused in
-                guard wasFocused, !isFocused, isAddingSymbol else { return }
-                dismissAddSymbolInput()
-            }
-    }
-
-    private var isInterfaceActive: Bool {
-        interfaceActiveOverride ?? (appearsActive || isPointerInside)
-    }
-
-    private var currentWatchlistHeight: CGFloat {
-        if !model.contractCandidates.isEmpty {
-            return min(
-                DashboardLayout.maximumWatchlistHeight,
-                34 + CGFloat(model.contractCandidates.count) * 44
-                    + (model.symbolErrorMessage == nil ? 0 : 30)
-            )
-        }
-        return DashboardLayout.watchlistHeight(
-            quoteCount: quoteCountForLayout,
-            reservesAddSymbolSpace: reservesAddSymbolSpace
-        )
-    }
-
-    private var quoteCountForLayout: Int {
-        DashboardLayout.quoteCountForLayout(
-            current: model.snapshot.quotes.count,
-            reserved: quoteLayoutCount
-        )
-    }
-
-    private var isQuoteRemovalSettling: Bool {
-        quoteCountForLayout > model.snapshot.quotes.count
-    }
-
-    private var quoteIDs: [Int] {
-        model.snapshot.quotes.map(\.id)
-    }
-
-    private var watchlistNeedsExpandedWidth: Bool {
-        !model.contractCandidates.isEmpty
-            || model.snapshot.quotes.isEmpty
-            || isAddingSymbol
-            || reservesAddSymbolSpace
-            || activeQuoteID != nil
-    }
-
-    private var watchlistHasAccessory: Bool {
-        // Keep the 24pt rail reserved while the add-symbol row is entering or
-        // leaving. Dropping it at the same time as the input transition makes
-        // the list and NSPanel recalculate their width by one accessory rail.
-        quoteCountForLayout > 0 && model.contractCandidates.isEmpty
-    }
-
-    private var currentWatchlistWidth: CGFloat {
-        DashboardLayout.moduleWidth(expanded: watchlistNeedsExpandedWidth)
-            + (watchlistHasAccessory ? DashboardLayout.watchlistAccessoryWidth : 0)
-    }
-
-    private var currentModulesWidth: CGFloat {
-        let pnlWidth = DashboardLayout.moduleWidth(expanded: isPnLExpanded)
-        let visibleWidth = isWatchlistExpanded
-            ? max(pnlWidth, currentWatchlistWidth)
-            : pnlWidth
-        guard usesStableHoverWidth else { return visibleWidth }
-
-        // Keep one interaction envelope for the entire hover session. A P&L
-        // card expands to 243pt while an expanded quote also needs its 24pt
-        // accessory rail. Letting NSPanel alternate between those widths made
-        // the whole hosted layer re-layout whenever the pointer crossed from
-        // one module to the other.
-        let stableWidth = DashboardLayout.stableHoverWidth(
-            watchlistExpanded: isWatchlistExpanded,
-            hasAccessory: watchlistHasAccessory
-        )
-        return max(visibleWidth, stableWidth)
-    }
-
-    private var currentModulesHeight: CGFloat {
-        DashboardLayout.pnlHeight
-            + (isWatchlistExpanded
-                ? DashboardLayout.moduleSpacing + currentWatchlistHeight
-                : 0)
     }
 
     private var currentContentSize: CGSize {
-        CGSize(
-            width: currentModulesWidth + DashboardLayout.shadowPadding * 2,
-            height: currentModulesHeight + DashboardLayout.shadowPadding * 2
-        )
+        DashboardLayout.contentSize(expanded: isExpanded)
+    }
+
+    private var currentVisibleHeight: CGFloat {
+        isExpanded
+            ? DashboardLayout.expandedIslandSize.height
+            : DashboardLayout.collapsedIslandSize.height
     }
 
     private func reportVisibleSize(_ size: CGSize) {
@@ -302,781 +425,461 @@ struct DashboardView: View {
         }
     }
 
-    private func setInterfaceHovered(_ hovering: Bool) {
-        guard hovering != interfaceHoverTarget else { return }
-        interfaceHoverTarget = hovering
-        interfaceHoverGeneration += 1
-        let generation = interfaceHoverGeneration
-        if hovering {
-            withAnimation(.easeInOut(duration: 0.22)) {
-                isPointerInside = true
-            }
-            return
-        }
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(140))
-            guard generation == interfaceHoverGeneration else { return }
-            withAnimation(.easeInOut(duration: 0.22)) {
-                isPointerInside = false
-            }
-        }
+    private var quoteIDs: [Int] {
+        model.snapshot.quotes.map(\.id)
     }
 
-    private func setPnLHovered(_ hovering: Bool) {
-        guard hovering != pnlHoverTarget else { return }
-        pnlHoverTarget = hovering
-        pnlHoverGeneration += 1
-        let generation = pnlHoverGeneration
-        if hovering {
-            withAnimation(.spring(duration: 0.42, bounce: 0.12)) {
-                isPnLExpanded = true
-            }
-            return
-        }
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(140))
-            guard generation == pnlHoverGeneration else { return }
-            withAnimation(.spring(duration: 0.38, bounce: 0.08)) {
-                isPnLExpanded = false
-            }
-        }
+    private var selectedQuote: QuoteSnapshot? {
+        guard let selectedQuoteID else { return model.snapshot.quotes.first }
+        return model.snapshot.quotes.first(where: { $0.id == selectedQuoteID })
+            ?? model.snapshot.quotes.first
     }
 
-    private func setQuoteHovered(_ quoteID: Int?) {
-        guard quoteID != quoteHoverTarget else { return }
-        quoteHoverTarget = quoteID
-        quoteHoverGeneration += 1
-        let generation = quoteHoverGeneration
-        if let quoteID {
-            withAnimation(.spring(duration: 0.38, bounce: 0.10)) {
-                activeQuoteID = quoteID
-            }
-            return
-        }
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(140))
-            guard generation == quoteHoverGeneration, quoteHoverTarget == nil else { return }
-            withAnimation(.spring(duration: 0.34, bounce: 0.06)) {
-                activeQuoteID = nil
-            }
-        }
+    private var isInterfaceActive: Bool {
+        interfaceActiveOverride ?? isExpanded
     }
 
-    private func updateHoverTargets(at location: CGPoint) {
-        let startedHoverSession = !hoverSessionTargetActive
-        if !hoverSessionTargetActive {
-            hoverSessionTargetActive = true
-            hoverSessionGeneration += 1
-            // Give NSPanel one layout pass to establish the full interaction
-            // envelope before a card begins animating into that space. The
-            // size callback is intentionally deferred by one main-actor turn,
-            // so starting both at once briefly rendered the first P&L
-            // expansion inside the old collapsed window.
-            withTransaction(Transaction(animation: nil)) {
-                usesStableHoverWidth = true
-            }
+    private var island: some View {
+        ZStack(alignment: .top) {
+            Color.black
+
+            expandedIsland
+                .allowsHitTesting(isExpanded)
+                .accessibilityHidden(!isExpanded)
         }
-        setInterfaceHovered(true)
-        guard !startedHoverSession else { return }
-        setPnLHovered(
-            DashboardLayout.pnlHoverFrame(expanded: isPnLExpanded).contains(location)
+        // Keep the complete drawer and its content laid out at all times.
+        // Only this single animated clip changes, revealing the live surface
+        // from top to bottom without cross-fading or scaling separate layers.
+        .frame(
+            width: DashboardLayout.expandedIslandSize.width,
+            height: DashboardLayout.expandedIslandSize.height,
+            alignment: .top
         )
-        setQuoteHovered(quoteID(at: location))
-    }
-
-    private func endHoverSession() {
-        guard hoverSessionTargetActive else { return }
-        hoverSessionTargetActive = false
-        hoverSessionGeneration += 1
-        let generation = hoverSessionGeneration
-
-        interfaceHoverTarget = false
-        pnlHoverTarget = false
-        quoteHoverTarget = nil
-        interfaceHoverGeneration += 1
-        pnlHoverGeneration += 1
-        quoteHoverGeneration += 1
-
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(160))
-            guard generation == hoverSessionGeneration else { return }
-            // Commit the complete inactive state in one transaction. Running
-            // three independent exit animations made the hosting view report
-            // several near-simultaneous sizes to NSPanel, which showed up as
-            // a small secondary shake after the pointer had already left.
-            withAnimation(.smooth(duration: 0.30)) {
-                isPointerInside = false
-                isPnLExpanded = false
-                activeQuoteID = nil
-            }
-
-            // Hold the NSPanel envelope until the visible cards have fully
-            // settled, then perform one non-animated window shrink.
-            try? await Task.sleep(for: .milliseconds(320))
-            guard generation == hoverSessionGeneration else { return }
-            withTransaction(Transaction(animation: nil)) {
-                usesStableHoverWidth = false
-            }
-        }
-    }
-
-    private func quoteID(at location: CGPoint) -> Int? {
-        guard isWatchlistExpanded else { return nil }
-
-        // Clicking the add button necessarily starts from an expanded final
-        // row. Freeze that hover state while the input owns the reserved area;
-        // otherwise hiding the button makes the pointer fall outside the row
-        // and collapses it during the input's own transition.
-        if reservesAddSymbolSpace {
-            return activeQuoteID
-        }
-
-        guard
-              model.contractCandidates.isEmpty,
-              !model.snapshot.quotes.isEmpty
-        else { return nil }
-
-        return model.snapshot.quotes.enumerated().first(where: { index, quote in
-            guard revealedQuoteCount == .max || index < revealedQuoteCount else { return false }
-            return DashboardLayout.quoteHoverFrame(
-                index: index,
-                expanded: activeQuoteID == quote.id,
-                // The add button moves with the final row's trailing edge.
-                // Keep its accessory rail inside the same hover target so the
-                // row cannot collapse while the pointer travels to the button.
-                includesAccessory: index == model.snapshot.quotes.count - 1
-                    && !isAddingSymbol
-            ).contains(location)
-        })?.element.id
-    }
-
-    private var primaryInterfaceColor: Color {
-        isInterfaceActive ? .primary : .white.opacity(0.63)
-    }
-
-    private var secondaryInterfaceColor: Color {
-        isInterfaceActive ? .secondary : .white.opacity(0.50)
-    }
-
-    private var tertiaryInterfaceColor: Color {
-        isInterfaceActive ? Color.secondary.opacity(0.72) : Color.white.opacity(0.39)
-    }
-
-    private func modulePrimaryColor(active: Bool) -> Color {
-        active ? primaryInterfaceColor : Color.white.opacity(0.82)
-    }
-
-    private func moduleSecondaryColor(active: Bool) -> Color {
-        active ? secondaryInterfaceColor : Color.white.opacity(0.56)
-    }
-
-    private var modules: some View {
-        VStack(alignment: .leading, spacing: DashboardLayout.moduleSpacing) {
-            pnlModule
-                .frame(
-                    width: DashboardLayout.moduleWidth(expanded: isPnLExpanded),
-                    height: DashboardLayout.pnlHeight
-                )
-                .openIBKRGlassCard(active: isPnLExpanded)
-                .contentShape(
-                    RoundedRectangle(
-                        cornerRadius: DashboardLayout.cardCornerRadius,
-                        style: .continuous
-                    )
-                )
-                .overlay(alignment: .leading) {
-                    WindowDragArea()
-                        .frame(
-                            width: DashboardLayout.moduleWidth(expanded: isPnLExpanded)
-                                - DashboardLayout.pnlDragButtonExclusionWidth,
-                            height: DashboardLayout.pnlHeight
-                        )
-                }
-
-            if isWatchlistExpanded {
-                watchlistModule
-                    .frame(width: currentWatchlistWidth, height: currentWatchlistHeight)
-                    .transition(.opacity)
-            }
-        }
-        .animation(.easeInOut(duration: 0.22), value: isInterfaceActive)
-    }
-
-    private var pnlModule: some View {
-        HStack(alignment: .center, spacing: 7) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Daily P&L")
-                    .font(.caption2)
-                    .foregroundStyle(moduleSecondaryColor(active: isPnLExpanded))
-                HStack(spacing: 2) {
-                    Text(
-                        dailyPnLAmountText(
-                            model.snapshot.pnl.daily,
-                            currency: model.snapshot.account.currency
-                        )
-                    )
-                        .font(.system(size: 16, weight: .semibold, design: .rounded))
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .allowsTightening(true)
-                        .minimumScaleFactor(0.60)
-                        .foregroundStyle(
-                            modulePnLValueColor(
-                                model.snapshot.pnl.daily,
-                                active: isPnLExpanded
-                            )
-                        )
-
-                    if let arrow = dailyPnLArrow(model.snapshot.pnl.daily) {
-                        Text(arrow)
-                            .font(.system(size: 14, weight: .semibold, design: .rounded))
-                            .foregroundStyle(pnlDirectionColor(model.snapshot.pnl.daily))
-                    }
-                }
-                Text(dailyPnLPercentText(model.snapshot.dailyPnLPercent))
-                    .font(.system(size: 9, weight: .medium, design: .rounded))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .foregroundStyle(
-                        isPnLExpanded
-                            ? pnlDirectionColor(model.snapshot.pnl.daily)
-                            : moduleSecondaryColor(active: false)
-                    )
-            }
-            .frame(minWidth: 64, maxWidth: .infinity, alignment: .leading)
-
-            if isPnLExpanded {
-                HStack(alignment: .center, spacing: 8) {
-                    pnlMetric("Unrealized", model.snapshot.pnl.unrealized)
-                    pnlMetric("Realized", model.snapshot.pnl.realized)
-                }
-                .transition(
-                    .asymmetric(
-                        insertion: .move(edge: .trailing)
-                            .combined(with: .opacity)
-                            .combined(with: .scale(scale: 0.94, anchor: .leading)),
-                        removal: .opacity.combined(with: .scale(scale: 0.96, anchor: .leading))
-                    )
-                )
-            }
-
-            Button {
-                setWatchlistExpanded(!isWatchlistExpanded)
-            } label: {
-                Image(systemName: isWatchlistExpanded ? "chevron.down" : "chevron.up")
-                    .font(.system(size: 9, weight: .bold))
-                    .frame(width: 14, height: 24)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(moduleSecondaryColor(active: isPnLExpanded))
-            .accessibilityLabel(isWatchlistExpanded ? "Collapse Watchlist" : "Expand Watchlist")
-        }
-        .padding(.horizontal, 10)
+        .clipShape(DrawerRevealShape(expansion: isExpanded ? 1 : 0))
+        .contentShape(DrawerRevealShape(expansion: isExpanded ? 1 : 0))
+        .frame(
+            width: DashboardLayout.expandedIslandSize.width,
+            height: currentVisibleHeight,
+            alignment: .top
+        )
         .clipped()
+        .shadow(
+            color: .black.opacity(isExpanded ? 0.35 : 0.13),
+            radius: isExpanded ? 14 : 7,
+            y: isExpanded ? 5 : 2
+        )
+        .onTapGesture {
+            guard !isExpanded else { return }
+            setHovering(true)
+        }
+        .animation(DashboardLayout.islandAnimation, value: isExpanded)
+        .animation(.easeInOut(duration: 0.18), value: selectedQuoteID)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(isExpanded ? "OpenIBKR Dynamic Island" : "Expand OpenIBKR controls")
     }
 
-    private var watchlistModule: some View {
-        Group {
-            if !model.contractCandidates.isEmpty {
-                contractCandidates
-            } else if quoteCountForLayout == 0,
-                      !isAddingSymbol,
-                      !reservesAddSymbolSpace
-            {
-                emptyWatchlist
-            } else {
-                quoteRows
-            }
+    private var expandedIsland: some View {
+        HStack(spacing: 0) {
+            dailyPnL
+                .frame(width: 190, alignment: .leading)
+
+            Rectangle()
+                .fill(Color.white.opacity(0.10))
+                .frame(width: 1, height: 82)
+                .padding(.horizontal, 18)
+
+            watchlist
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var quoteRows: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            if quoteCountForLayout > 0 {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 7) {
-                        ForEach(Array(model.snapshot.quotes.enumerated()), id: \.element.id) { index, quote in
-                            let expanded = activeQuoteID == quote.id
-                            let quoteWidth = DashboardLayout.moduleWidth(expanded: expanded)
-                            let revealed = index < revealedQuoteCount
-                            let isFinalQuote = index == model.snapshot.quotes.count - 1
-
-                            HStack(spacing: 6) {
-                                quoteRow(quote, expanded: expanded)
-                                    .frame(width: quoteWidth)
-                                    .contentShape(rowShape)
-
-                                Group {
-                                    if isFinalQuote
-                                        && !isAddingSymbol
-                                        && !isQuoteRemovalSettling
-                                    {
-                                        addSymbolButton
-                                    } else {
-                                        Color.clear
-                                    }
-                                }
-                                .frame(width: 18, height: 24)
-                            }
-                            .frame(height: 48)
-                            .opacity(revealed ? 1 : 0)
-                            .offset(x: revealed ? 0 : -22)
-                            .transition(
-                                .asymmetric(
-                                    insertion: .identity,
-                                    removal: .move(edge: .leading)
-                                        .combined(with: .opacity)
-                                        .combined(
-                                            with: .scale(scale: 0.94, anchor: .leading)
-                                        )
-                                )
-                            )
-                            // Mask the final composited row so macOS glass,
-                            // stroke, shadow, and content retract together. The
-                            // material layer otherwise outlives the text opacity
-                            // and leaves a white rounded-rectangle afterimage.
-                            .mask(alignment: .leading) {
-                                Rectangle()
-                                    .scaleEffect(
-                                        x: revealed ? 1 : 0,
-                                        y: 1,
-                                        anchor: .leading
-                                    )
-                            }
-                            .animation(.smooth(duration: 0.26), value: revealedQuoteCount)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .animation(.smooth(duration: 0.28), value: quoteIDs)
-                }
-                .frame(
-                    height: DashboardLayout.quoteViewportHeight(
-                        quoteCount: quoteCountForLayout,
-                        reservesAddSymbolSpace: reservesAddSymbolSpace
-                    ),
-                    alignment: .top
-                )
-                .scrollIndicators(.hidden)
-                .scrollClipDisabled()
-            }
-
-            if isAddingSymbol {
-                addSymbol
-                    .frame(width: DashboardLayout.expandedModuleWidth)
-                    .frame(minHeight: 44)
-                    .openIBKRGlassCard(active: false, cornerRadius: 8)
-                    .contentShape(rowShape)
-                    .overlay {
-                        OutsideClickMonitor {
-                            dismissAddSymbolInput()
-                        }
-                    }
-                    .transition(
-                        .move(edge: .leading)
-                            .combined(with: .opacity)
-                            .combined(with: .scale(scale: 0.97, anchor: .leading))
-                    )
-            }
-        }
-        .padding(.vertical, 10)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .onChange(of: isAddingSymbol) { _, isAdding in
-            guard isAdding else { return }
-            Task { @MainActor in
-                await Task.yield()
-                isSymbolFieldFocused = true
-            }
-        }
     }
 
-    private func quoteRow(_ quote: QuoteSnapshot, expanded: Bool) -> some View {
-        HStack(spacing: expanded ? 10 : 5) {
-            Circle()
-                .fill(quoteStatusColor(quote))
-                .frame(width: expanded ? 8 : 6, height: expanded ? 8 : 6)
+    private var dailyPnL: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("TODAY'S P&L")
+                .font(.system(size: 10, weight: .medium, design: .rounded))
+                .tracking(1.1)
+                .foregroundStyle(Color.white.opacity(0.48))
 
-            Text(quote.instrument.symbol)
-                .font(
-                    expanded
-                        ? .system(.body, design: .rounded, weight: .semibold)
-                        : .system(size: 12, weight: .semibold, design: .rounded)
+            Text(
+                dailyPnLAmountText(
+                    model.snapshot.pnl.daily,
+                    currency: model.snapshot.account.currency
                 )
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-                .allowsTightening(true)
-                .layoutPriority(1)
-                .foregroundStyle(modulePrimaryColor(active: expanded))
+            )
+            .font(.system(size: 25, weight: .semibold, design: .rounded))
+            .monospacedDigit()
+            .lineLimit(1)
+            .minimumScaleFactor(0.62)
+            .allowsTightening(true)
+            .foregroundStyle(pnlDirectionColor(model.snapshot.pnl.daily))
 
-            if expanded {
-                let trend = model.quoteTrends[quote.id] ?? []
-                QuoteSparkline(
-                    points: trend,
-                    color: quoteTrendColor(trend)
-                )
-                .frame(minWidth: 30, maxWidth: .infinity)
-                .frame(height: 20)
-                .opacity(trend.count >= 2 ? 1 : 0)
-                .accessibilityHidden(true)
-                .transition(.opacity.combined(with: .scale(scale: 0.94)))
-            } else {
-                Spacer(minLength: 3)
-            }
+            Text(dailyPnLPercentText(model.snapshot.dailyPnLPercent))
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(pnlDirectionColor(model.snapshot.pnl.daily))
+        }
+        .frame(maxHeight: .infinity, alignment: .center)
+    }
 
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(price(quote.displayPrice))
-                    .font(.system(.body, design: .rounded, weight: .medium))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
-                    .allowsTightening(true)
-                    .foregroundStyle(
-                        quote.stale
-                            ? moduleSecondaryColor(active: expanded)
-                            : modulePrimaryColor(active: expanded)
-                    )
+    private var watchlist: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Text("WATCHLIST")
+                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                    .tracking(1.1)
+                    .foregroundStyle(Color.white.opacity(0.48))
 
-                if expanded {
-                    Text(changeText(quote))
-                        .font(.caption.monospacedDigit())
-                        .lineLimit(1)
-                        .foregroundStyle(changeColor(quote))
-                        .transition(
-                            .move(edge: .trailing)
-                                .combined(with: .opacity)
-                                .combined(with: .scale(scale: 0.94, anchor: .trailing))
-                        )
-                }
-            }
+                Spacer(minLength: 8)
 
-            if expanded {
-                Button { model.remove(conId: quote.instrument.conId) } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .bold))
+                Button {
+                    showAddSymbolInput()
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 10, weight: .bold))
                         .frame(width: 20, height: 20)
-                        .contentShape(Circle())
+                        .background(Color.white.opacity(0.10), in: Circle())
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(tertiaryInterfaceColor)
-                .accessibilityLabel("Remove \(quote.instrument.symbol)")
-                .transition(.opacity.combined(with: .scale(scale: 0.85)))
+                .foregroundStyle(Color.white.opacity(0.58))
+                .accessibilityLabel("Add U.S. Stock Symbol")
+            }
+
+            if !model.contractCandidates.isEmpty {
+                contractCandidates
+            } else if isAddingSymbol {
+                addSymbol
+            } else if let selectedQuote {
+                ticker(selectedQuote)
+                    .id(selectedQuote.id)
+            } else {
+                emptyWatchlist
             }
         }
-        .padding(.horizontal, expanded ? 12 : 8)
-        .frame(minHeight: 48)
-        .openIBKRGlassCard(active: expanded)
-        .contentShape(rowShape)
-        .animation(.easeInOut(duration: 0.20), value: expanded)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func ticker(_ quote: QuoteSnapshot) -> some View {
+        HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(quoteDailyChangeColor(quote))
+                        .frame(width: 6, height: 6)
+
+                    Text(quote.instrument.symbol)
+                        .font(.system(size: 18, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.white.opacity(0.92))
+                        .lineLimit(1)
+
+                    Button {
+                        model.remove(conId: quote.instrument.conId)
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 8, weight: .bold))
+                            .frame(width: 16, height: 16)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.white.opacity(0.34))
+                    .accessibilityLabel("Remove \(quote.instrument.symbol)")
+                }
+
+                Text(quotePriceText(quote))
+                    .font(.system(size: 16, weight: .medium, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(
+                        quote.stale ? Color.white.opacity(0.45) : Color.white.opacity(0.80)
+                    )
+
+                Text(changeText(quote))
+                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(quoteDailyChangeColor(quote))
+            }
+            .frame(width: 112, alignment: .leading)
+
+            QuoteSparkline(
+                points: model.quoteTrends[quote.id] ?? [],
+                color: quoteDailyChangeColor(quote)
+            )
+            .frame(maxWidth: .infinity)
+            .frame(height: 44)
+            .opacity((model.quoteTrends[quote.id] ?? []).count >= 2 ? 1 : 0)
+            .accessibilityHidden(true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay {
+            ScrollWheelCaptureView { sample in
+                handleScroll(sample)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .allowsHitTesting(false)
+        }
+        .contentShape(Rectangle())
+        .transition(
+            .asymmetric(
+                insertion: .opacity.combined(with: .offset(y: 6)),
+                removal: .opacity.combined(with: .offset(y: -6))
+            )
+        )
         .accessibilityElement(children: .combine)
         .accessibilityLabel(quoteAccessibilityLabel(quote))
     }
 
-    private var addSymbolButton: some View {
-        Button {
-            showAddSymbolInput()
-        } label: {
-            Image(systemName: "plus")
-                .font(.system(size: 10, weight: .bold))
-                .frame(width: 18, height: 18)
-                .background(secondaryInterfaceColor.opacity(0.18), in: Circle())
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(secondaryInterfaceColor)
-        .accessibilityLabel("Add U.S. Stock Symbol")
-    }
-
-    private var rowShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-    }
-
     private var emptyWatchlist: some View {
-        VStack(spacing: 8) {
-            Button {
-                showAddSymbolInput()
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 11, weight: .bold))
-                    .frame(width: 24, height: 24)
-                    .background(secondaryInterfaceColor.opacity(0.18), in: Circle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(secondaryInterfaceColor)
-            .accessibilityLabel("Add U.S. Stock Symbol")
-
-            Text("Add symbols to view prices here")
-                .font(.caption)
-                .foregroundStyle(secondaryInterfaceColor)
+        HStack(spacing: 8) {
+            Image(systemName: "list.bullet.rectangle")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Color.white.opacity(0.42))
+            Text("No Watchlist")
+                .font(.system(size: 13, weight: .medium, design: .rounded))
+                .foregroundStyle(Color.white.opacity(0.55))
         }
+        .frame(maxHeight: .infinity, alignment: .center)
     }
 
     private var addSymbol: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                TextField(
-                    "",
-                    text: $model.symbolInput,
-                    prompt: Text("Ticker symbol, e.g. AAPL")
-                        .foregroundStyle(moduleSecondaryColor(active: false))
-                )
-                    .textFieldStyle(.plain)
-                    .foregroundStyle(modulePrimaryColor(active: false))
-                    .focused($isSymbolFieldFocused)
-                    .onSubmit {
-                        guard !model.isSearchingSymbol else { return }
-                        model.addSymbol()
-                    }
-
-                if model.isSearchingSymbol {
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.72)
-                        .frame(width: 16, height: 16)
-                        .accessibilityLabel("Looking Up Stock Symbol")
-                }
-
-                Button("Add") { model.addSymbol() }
-                    .buttonStyle(.borderless)
-                    .focusable(false)
-                    .foregroundStyle(moduleSecondaryColor(active: false))
-                    .keyboardShortcut(.return, modifiers: [.command])
-                    .disabled(
-                        model.isSearchingSymbol
-                            || model.symbolInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    )
-                    .accessibilityHint("Add the stock symbol to the watchlist")
+        HStack(spacing: 8) {
+            TextField(
+                "",
+                text: $model.symbolInput,
+                prompt: Text("Ticker, e.g. AAPL")
+                    .foregroundStyle(Color.white.opacity(0.34))
+            )
+            .textFieldStyle(.plain)
+            .font(.system(size: 13, weight: .medium, design: .rounded))
+            .foregroundStyle(Color.white.opacity(0.86))
+            .focused($isSymbolFieldFocused)
+            .onSubmit {
+                guard !model.isSearchingSymbol else { return }
+                model.addSymbol()
             }
-
-            if let error = model.symbolErrorMessage {
-                Text(error)
-                    .font(.caption2)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .foregroundStyle(isInterfaceActive ? Color.red : secondaryInterfaceColor)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                    .accessibilityLabel("Failed to add: \(error)")
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
-        .animation(.easeInOut(duration: 0.20), value: model.symbolErrorMessage)
-    }
-
-    private func showAddSymbolInput() {
-        symbolEntryGeneration += 1
-        let generation = symbolEntryGeneration
-        model.beginSymbolEntry()
-
-        // Resize the transparent NSPanel first, without animating any visible
-        // content. Showing the row in a later frame prevents the panel resize,
-        // ScrollView insertion, and row transition from competing for layout.
-        withTransaction(Transaction(animation: nil)) {
-            reservesAddSymbolSpace = true
-        }
-
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(24))
-            guard generation == symbolEntryGeneration, reservesAddSymbolSpace else { return }
-            withAnimation(.spring(duration: 0.30, bounce: 0.08)) {
-                isAddingSymbol = true
-            }
-        }
-    }
-
-    private func dismissAddSymbolInput(cancelEntry: Bool = true) {
-        guard isAddingSymbol || reservesAddSymbolSpace else { return }
-        symbolEntryGeneration += 1
-        let generation = symbolEntryGeneration
-
-        withAnimation(.easeInOut(duration: 0.18)) {
-            isAddingSymbol = false
-            isSymbolFieldFocused = false
-        }
-        if cancelEntry {
-            model.cancelSymbolEntry()
-        }
-
-        // Keep the panel height fixed until the input row has completely
-        // retracted, then shrink the invisible window in one non-animated step.
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(220))
-            guard generation == symbolEntryGeneration, !isAddingSymbol else { return }
-            withTransaction(Transaction(animation: nil)) {
-                reservesAddSymbolSpace = false
-            }
-        }
-    }
-
-    private func setWatchlistExpanded(_ expanded: Bool) {
-        revealGeneration += 1
-        let generation = revealGeneration
-
-        if expanded {
-            revealedQuoteCount = 0
-            withTransaction(Transaction(animation: nil)) {
-                isWatchlistExpanded = true
-            }
-
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(55))
-                for index in model.snapshot.quotes.indices {
-                    guard generation == revealGeneration, isWatchlistExpanded else { return }
-                    revealedQuoteCount = index + 1
-                    try? await Task.sleep(for: .milliseconds(65))
-                }
-            }
-        } else {
-            quoteHoverGeneration += 1
-            quoteHoverTarget = nil
-            activeQuoteID = nil
-
-            Task { @MainActor in
-                for index in model.snapshot.quotes.indices.reversed() {
-                    guard generation == revealGeneration, isWatchlistExpanded else { return }
-                    revealedQuoteCount = index
-                    try? await Task.sleep(for: .milliseconds(55))
-                }
-
-                guard generation == revealGeneration, isWatchlistExpanded else { return }
-                // The final row still needs to finish its 260ms composite
-                // mask retraction. The loop has already waited 55ms after
-                // hiding it; this buffer ensures the container is only
-                // removed after the mask has fully closed.
-                try? await Task.sleep(for: .milliseconds(280))
-                guard generation == revealGeneration, isWatchlistExpanded else { return }
-
-                withTransaction(Transaction(animation: nil)) {
-                    isWatchlistExpanded = false
-                }
-            }
-        }
-    }
-
-    private var contractCandidates: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Select a Contract")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(primaryInterfaceColor)
-                Spacer()
-                Button("Cancel") { model.cancelCandidateSelection() }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(secondaryInterfaceColor)
-            }
-            .padding(.horizontal, 16)
-            .frame(height: 34)
 
             if model.isSearchingSymbol {
                 ProgressView()
                     .controlSize(.small)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 6)
-                    .accessibilityLabel("Adding Selected Contract")
-            } else if let error = model.symbolErrorMessage {
+                    .scaleEffect(0.72)
+            }
+
+            Button("Add") {
+                model.addSymbol()
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 12, weight: .semibold, design: .rounded))
+            .foregroundStyle(Color.white.opacity(0.72))
+            .disabled(
+                model.isSearchingSymbol
+                    || model.symbolInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            )
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .background {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.white.opacity(0.08))
+
+            OutsideClickMonitor {
+                dismissAddSymbolInput()
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .allowsHitTesting(false)
+        }
+        .overlay(alignment: .bottomLeading) {
+            if let error = model.symbolErrorMessage {
                 Text(error)
-                    .font(.caption2)
-                    .foregroundStyle(isInterfaceActive ? Color.red : secondaryInterfaceColor)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 6)
-                    .accessibilityLabel("Failed to add: \(error)")
+                    .font(.system(size: 9, weight: .medium, design: .rounded))
+                    .foregroundStyle(.red.opacity(0.9))
+                    .lineLimit(2)
+                    .offset(y: 28)
+            }
+        }
+        .transition(.opacity.combined(with: .offset(y: 5)))
+    }
+
+    private var contractCandidates: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("SELECT CONTRACT")
+                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+                    .tracking(0.8)
+                    .foregroundStyle(Color.white.opacity(0.48))
+
+                Spacer()
+
+                Button("Cancel") {
+                    model.cancelCandidateSelection()
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 10, weight: .medium, design: .rounded))
+                .foregroundStyle(Color.white.opacity(0.62))
             }
 
             ScrollView {
-                LazyVStack(spacing: 0) {
+                LazyVStack(spacing: 3) {
                     ForEach(model.contractCandidates) { instrument in
                         Button {
                             model.selectCandidate(instrument)
                         } label: {
-                            HStack {
+                            HStack(spacing: 8) {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(instrument.localSymbol ?? instrument.symbol)
-                                        .fontWeight(.medium)
-                                        .foregroundStyle(primaryInterfaceColor)
+                                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                        .foregroundStyle(Color.white.opacity(0.86))
                                     Text(instrument.primaryExchange ?? instrument.exchange)
-                                        .font(.caption2)
-                                        .foregroundStyle(secondaryInterfaceColor)
+                                        .font(.system(size: 9, weight: .medium, design: .rounded))
+                                        .foregroundStyle(Color.white.opacity(0.42))
                                 }
                                 Spacer()
                                 Text("#\(instrument.conId)")
-                                    .font(.caption2.monospacedDigit())
-                                    .foregroundStyle(tertiaryInterfaceColor)
+                                    .font(.system(size: 9, weight: .medium, design: .rounded))
+                                    .monospacedDigit()
+                                    .foregroundStyle(Color.white.opacity(0.36))
                             }
-                            .padding(.horizontal, 16)
-                            .frame(height: 44)
-                            .contentShape(Rectangle())
+                            .padding(.horizontal, 8)
+                            .frame(height: 34)
+                            .background(
+                                Color.white.opacity(0.07),
+                                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            )
                         }
                         .buttonStyle(.plain)
                         .disabled(model.isSearchingSymbol)
-                        .accessibilityLabel(
-                            "Select \(instrument.localSymbol ?? instrument.symbol), \(instrument.primaryExchange ?? instrument.exchange)"
-                        )
                     }
                 }
             }
+            .frame(maxHeight: 70)
             .scrollIndicators(.hidden)
         }
+        .transition(.opacity.combined(with: .offset(y: 5)))
     }
 
-    private func pnlMetric(_ title: String, _ value: DecimalString?) -> some View {
-        VStack(alignment: .trailing, spacing: 3) {
-            Text(title)
-                .font(.system(size: 8, weight: .medium, design: .rounded))
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-                .foregroundStyle(secondaryInterfaceColor)
-            Text(money(value, currency: model.snapshot.account.currency))
-                .font(.system(.caption, design: .rounded, weight: .medium))
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-                .foregroundStyle(pnlColor(value))
+    private func handlePointerSample(_ sample: PointerTrackingSample) {
+        let hasMoved: Bool
+        if let lastPointerLocation {
+            let deltaX = sample.screenLocation.x - lastPointerLocation.x
+            let deltaY = sample.screenLocation.y - lastPointerLocation.y
+            hasMoved = deltaX * deltaX + deltaY * deltaY > 1
+        } else {
+            hasMoved = true
+        }
+        lastPointerLocation = sample.screenLocation
+
+        if sample.isInside {
+            if suppressReactivationUntilPointerMoves {
+                guard hasMoved else { return }
+                suppressReactivationUntilPointerMoves = false
+            }
+            guard !isPointerInside else { return }
+            isPointerInside = true
+            setHovering(true)
+            return
+        }
+
+        if suppressReactivationUntilPointerMoves, hasMoved {
+            suppressReactivationUntilPointerMoves = false
+        }
+        guard isPointerInside else { return }
+        isPointerInside = false
+        setHovering(false)
+    }
+
+    private func setHovering(_ hovering: Bool) {
+        hoverGeneration += 1
+        let generation = hoverGeneration
+
+        if hovering {
+            guard !isExpanded else { return }
+            // Grow the transparent AppKit host before SwiftUI starts revealing
+            // the drawer. Without this preflight notification, the first
+            // expansion frame can be laid out in the compact-height window and
+            // briefly appear detached from the top edge.
+            onExpandedStateChanged?(true)
+            withAnimation(DashboardLayout.islandAnimation) {
+                isExpanded = true
+            }
+            return
+        }
+
+        Task { @MainActor in
+            // A short grace period prevents the pointer crossing the changing
+            // edge of the panel from immediately cancelling the expansion.
+            try? await Task.sleep(for: .milliseconds(100))
+            guard generation == hoverGeneration else { return }
+            suppressReactivationUntilPointerMoves = true
+            withAnimation(DashboardLayout.islandAnimation) {
+                isExpanded = false
+            }
+            if isAddingSymbol {
+                dismissAddSymbolInput()
+            }
         }
     }
 
-    private func quoteStatusColor(_ quote: QuoteSnapshot) -> Color {
+    private func handleScroll(_ sample: IslandScrollSample) {
+        guard isExpanded, !isAddingSymbol, model.contractCandidates.isEmpty else { return }
+        guard !model.snapshot.quotes.isEmpty else { return }
+        guard let direction = scrollGate.consume(sample) else { return }
+        stepSelectedQuote(by: direction)
+    }
+
+    private func stepSelectedQuote(by offset: Int) {
+        guard !model.snapshot.quotes.isEmpty else {
+            selectedQuoteID = nil
+            return
+        }
+
+        let ids = quoteIDs
+        let currentIndex = selectedQuoteID.flatMap { ids.firstIndex(of: $0) } ?? 0
         guard
-            model.snapshot.connection.state == .connected,
-            let change = quote.priceChange?.absolute
-        else { return Color.gray.opacity(0.78) }
-        if change > 0 { return .green }
-        if change < 0 { return .red }
-        return Color.gray.opacity(0.78)
+            let nextIndex = IslandWatchlistSelection.wrappedIndex(
+                current: currentIndex,
+                offset: offset,
+                count: ids.count
+            )
+        else { return }
+        let nextID = ids[nextIndex]
+
+        guard nextID != selectedQuoteID else { return }
+        withAnimation(.easeInOut(duration: 0.18)) {
+            selectedQuoteID = nextID
+        }
     }
 
-    private func money(_ value: DecimalString?, currency: String?) -> String {
-        guard let value else { return "—" }
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .currency
-        let currencyCode = currency ?? "USD"
-        formatter.currencyCode = currencyCode
-        if currencyCode == "USD" {
-            formatter.currencySymbol = "$"
+    private func reconcileSelectedQuote() {
+        let ids = quoteIDs
+        guard !ids.isEmpty else {
+            selectedQuoteID = nil
+            return
         }
-        return formatter.string(from: NSDecimalNumber(decimal: value.value)) ?? "—"
+        if let selectedQuoteID, ids.contains(selectedQuoteID) { return }
+        selectedQuoteID = ids[0]
+    }
+
+    private func showAddSymbolInput() {
+        model.beginSymbolEntry()
+        withAnimation(.easeInOut(duration: 0.18)) {
+            isAddingSymbol = true
+        }
+    }
+
+    private func dismissAddSymbolInput(cancelEntry: Bool = true) {
+        guard isAddingSymbol || isSymbolFieldFocused else { return }
+        withAnimation(.easeInOut(duration: 0.18)) {
+            isAddingSymbol = false
+            isSymbolFieldFocused = false
+        }
+        if cancelEntry { model.cancelSymbolEntry() }
     }
 
     private func dailyPnLAmountText(_ value: DecimalString?, currency: String?) -> String {
         guard let value else { return "—" }
         let magnitude = value.value < 0 ? -value.value : value.value
         let unsignedAmount = money(DecimalString(magnitude), currency: currency)
-        let amount: String
-        if value.value > 0 {
-            amount = "+\(unsignedAmount)"
-        } else if value.value < 0 {
-            amount = "-\(unsignedAmount)"
-        } else {
-            amount = unsignedAmount
-        }
-
-        return amount
-    }
-
-    private func dailyPnLArrow(_ value: DecimalString?) -> String? {
-        guard let value else { return nil }
-        if value.value > 0 { return "↑" }
-        if value.value < 0 { return "↓" }
-        return nil
+        if value.value > 0 { return "+\(unsignedAmount)" }
+        if value.value < 0 { return "-\(unsignedAmount)" }
+        return unsignedAmount
     }
 
     private func dailyPnLPercentText(_ value: Decimal?) -> String {
@@ -1085,10 +888,23 @@ struct DashboardView: View {
         return "\(sign)\(decimal(value, places: 2))%"
     }
 
-    private func price(_ value: DecimalString?) -> String {
+    private func money(_ value: DecimalString?, currency: String?) -> String {
         guard let value else { return "—" }
         let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
+        formatter.numberStyle = .currency
+        let currencyCode = currency ?? "USD"
+        formatter.currencyCode = currencyCode
+        if currencyCode == "USD" { formatter.currencySymbol = "$" }
+        return formatter.string(from: NSDecimalNumber(decimal: value.value)) ?? "—"
+    }
+
+    private func quotePriceText(_ quote: QuoteSnapshot) -> String {
+        guard let value = quote.displayPrice else { return "—" }
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        let currencyCode = quote.instrument.currency.isEmpty ? "USD" : quote.instrument.currency
+        formatter.currencyCode = currencyCode
+        if currencyCode == "USD" { formatter.currencySymbol = "$" }
         formatter.minimumFractionDigits = 2
         formatter.maximumFractionDigits = 4
         return formatter.string(from: NSDecimalNumber(decimal: value.value)) ?? "—"
@@ -1109,43 +925,26 @@ struct DashboardView: View {
         return formatter.string(from: NSDecimalNumber(decimal: value)) ?? "—"
     }
 
-    private func changeColor(_ quote: QuoteSnapshot) -> Color {
-        guard isInterfaceActive else { return secondaryInterfaceColor }
-        guard let change = quote.priceChange?.absolute else { return secondaryInterfaceColor }
-        if change > 0 { return .green }
-        if change < 0 { return .red }
-        return .secondary
+    private func pnlDirectionColor(_ value: DecimalString?) -> Color {
+        guard isInterfaceActive, let value else { return Color.white.opacity(0.84) }
+        if value.value > 0 { return .green }
+        if value.value < 0 { return .red }
+        return Color.white.opacity(0.72)
     }
 
-    private func quoteTrendColor(_ points: [QuoteTrendPoint]) -> Color {
-        switch QuoteTrendDirection.from(points) {
-        case .rising: .green
-        case .falling: .red
-        case .flat: Color.gray.opacity(0.78)
+    private func quoteDailyChangeColor(_ quote: QuoteSnapshot) -> Color {
+        guard let change = quote.priceChange?.absolute else {
+            return Color.white.opacity(0.38)
         }
+        if change > 0 { return .green }
+        if change < 0 { return .red }
+        return Color.white.opacity(0.48)
     }
 
     private func quoteAccessibilityLabel(_ quote: QuoteSnapshot) -> String {
         let stale = quote.stale ? ", data is stale" : ""
-        return "\(quote.instrument.symbol), price \(price(quote.displayPrice)), \(changeText(quote))\(stale)"
-    }
-
-    private func pnlColor(_ value: DecimalString?) -> Color {
-        guard isInterfaceActive else { return primaryInterfaceColor }
-        guard let value else { return primaryInterfaceColor }
-        return value.value >= 0 ? .green : .red
-    }
-
-    private func modulePnLValueColor(_ value: DecimalString?, active: Bool) -> Color {
-        guard active else { return Color.white.opacity(0.82) }
-        return pnlDirectionColor(value)
-    }
-
-    private func pnlDirectionColor(_ value: DecimalString?) -> Color {
-        guard let value else { return primaryInterfaceColor }
-        if value.value > 0 { return .green }
-        if value.value < 0 { return .red }
-        return primaryInterfaceColor
+        return
+            "\(quote.instrument.symbol), price \(quotePriceText(quote)), \(changeText(quote))\(stale)"
     }
 }
 
@@ -1177,65 +976,10 @@ private struct QuoteSparkline: View {
             }
             .stroke(
                 color,
-                style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round)
+                style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round)
             )
         }
         .padding(.vertical, 2)
-    }
-}
-
-private extension View {
-    @ViewBuilder
-    func openIBKRGlassCard(
-        active: Bool,
-        cornerRadius: CGFloat = DashboardLayout.cardCornerRadius
-    ) -> some View {
-        let shape = RoundedRectangle(
-            cornerRadius: cornerRadius,
-            style: .continuous
-        )
-        background {
-            if active {
-                shape.fill(.ultraThinMaterial)
-            } else {
-                // Keep the inactive glass appearance fully inside the card's
-                // rounded bounds. Liquid Glass `.regular` and SwiftUI shadow
-                // both draw ambient pixels outside that boundary.
-                shape
-                    .fill(.ultraThinMaterial)
-                    .overlay {
-                        shape.stroke(.white.opacity(0.14), lineWidth: 0.8)
-                    }
-                    .saturation(0)
-                    .opacity(0.50)
-                    .overlay {
-                        shape
-                            .fill(Color.black.opacity(0.32))
-                            .overlay {
-                                shape.stroke(
-                                    Color.white.opacity(0.18),
-                                    lineWidth: 0.6
-                                )
-                            }
-                    }
-            }
-        }
-    }
-}
-
-private struct WindowDragArea: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView {
-        DragView()
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {}
-
-    private final class DragView: NSView {
-        override var mouseDownCanMoveWindow: Bool { true }
-
-        override func mouseDown(with event: NSEvent) {
-            window?.performDrag(with: event)
-        }
     }
 }
 
@@ -1281,33 +1025,26 @@ private struct OutsideClickMonitor: NSViewRepresentable {
 
         private func startMonitoring() {
             guard localMonitor == nil, globalMonitor == nil else { return }
-            let eventMask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown]
-
-            localMonitor = NSEvent.addLocalMonitorForEvents(matching: eventMask) {
+            let mask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown]
+            localMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) {
                 [weak self] event in
                 self?.handleLocalMouseDown(event)
                 return event
             }
-            globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: eventMask) {
+            globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) {
                 [weak self] _ in
                 self?.notifyOutsideClick()
             }
         }
 
         private func handleLocalMouseDown(_ event: NSEvent) {
-            guard let window else {
+            guard let window, event.window === window else {
                 notifyOutsideClick()
                 return
             }
-            guard event.window === window else {
-                notifyOutsideClick()
-                return
-            }
-
             let localPoint = convert(event.locationInWindow, from: nil)
-            if !bounds.contains(localPoint) {
-                notifyOutsideClick()
-            }
+            guard !bounds.contains(localPoint) else { return }
+            notifyOutsideClick()
         }
 
         private func notifyOutsideClick() {
@@ -1316,22 +1053,24 @@ private struct OutsideClickMonitor: NSViewRepresentable {
             }
         }
 
-        deinit {
-            stopMonitoring()
-        }
+        deinit { stopMonitoring() }
     }
 }
 
 private struct PointerTrackingView: NSViewRepresentable {
-    let onLocationChanged: (CGPoint?) -> Void
+    let isExpanded: Bool
+    let onLocationChanged: (PointerTrackingSample) -> Void
 
     func makeNSView(context: Context) -> TrackingView {
         let view = TrackingView()
+        view.isExpanded = isExpanded
         view.onLocationChanged = onLocationChanged
+        view.startTracking()
         return view
     }
 
     func updateNSView(_ nsView: TrackingView, context: Context) {
+        nsView.isExpanded = isExpanded
         nsView.onLocationChanged = onLocationChanged
     }
 
@@ -1340,15 +1079,13 @@ private struct PointerTrackingView: NSViewRepresentable {
     }
 
     final class TrackingView: NSView {
-        var onLocationChanged: ((CGPoint?) -> Void)?
+        var onLocationChanged: ((PointerTrackingSample) -> Void)?
+        var isExpanded = false
         private var timer: Timer?
         private var wasInside = false
+        private var lastSampleLocation: CGPoint?
 
         override var isFlipped: Bool { true }
-
-        // This view observes the pointer but never participates in hit
-        // testing, so buttons, dragging, and click-through behavior remain
-        // owned by the visible SwiftUI controls beneath it.
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
         override func viewDidMoveToWindow() {
@@ -1359,13 +1096,11 @@ private struct PointerTrackingView: NSViewRepresentable {
         func stopTracking() {
             timer?.invalidate()
             timer = nil
-            if wasInside {
-                wasInside = false
-                onLocationChanged?(nil)
-            }
+            wasInside = false
+            lastSampleLocation = nil
         }
 
-        private func startTracking() {
+        func startTracking() {
             guard timer == nil else { return }
             let timer = Timer(timeInterval: 1 / 30, repeats: true) { [weak self] _ in
                 self?.samplePointer()
@@ -1377,83 +1112,116 @@ private struct PointerTrackingView: NSViewRepresentable {
 
         private func samplePointer() {
             guard let window, window.isVisible else {
-                if wasInside {
-                    wasInside = false
-                    onLocationChanged?(nil)
-                }
+                wasInside = false
+                lastSampleLocation = nil
                 return
             }
 
-            let windowPoint = window.convertPoint(fromScreen: NSEvent.mouseLocation)
-            let location = convert(windowPoint, from: nil)
-            if bounds.contains(location) {
-                wasInside = true
-                onLocationChanged?(CGPoint(x: location.x, y: location.y))
-            } else if wasInside {
-                wasInside = false
-                onLocationChanged?(nil)
+            // AppKit's background-drag handling moves the panel while the
+            // pointer is temporarily outside its old bounds. Do not turn a
+            // drag into a hover-exit transition until the mouse is released.
+            guard NSEvent.pressedMouseButtons & 1 == 0 else { return }
+
+            // Track the visible black drawer, not the transparent shadow
+            // padding around its host window. In compact mode only the 14 pt
+            // curved lip is visible; counting the full 34 pt panel made the
+            // drawer open before the pointer visually reached it.
+            let trackingRectOnScreen = DashboardLayout.pointerTrackingRect(
+                windowFrame: window.frame,
+                expanded: isExpanded
+            )
+            let screenLocation = NSEvent.mouseLocation
+            let isInside = DashboardLayout.pointerIsInside(
+                screenLocation,
+                trackingRect: trackingRectOnScreen
+            )
+            let hasMoved: Bool
+            if let lastSampleLocation {
+                let deltaX = screenLocation.x - lastSampleLocation.x
+                let deltaY = screenLocation.y - lastSampleLocation.y
+                hasMoved = deltaX * deltaX + deltaY * deltaY > 1
+            } else {
+                hasMoved = true
+            }
+            // Keep sampling while inside. Some pointer drivers update the
+            // cursor location without delivering a mouse-moved event; the
+            // state machine still filters duplicate inside samples and keeps
+            // the post-collapse re-entry lock intact.
+            guard isInside || isInside != wasInside || hasMoved else { return }
+
+            wasInside = isInside
+            lastSampleLocation = screenLocation
+            onLocationChanged?(
+                PointerTrackingSample(
+                    screenLocation: screenLocation,
+                    isInside: isInside
+                )
+            )
+        }
+
+
+        deinit { timer?.invalidate() }
+    }
+}
+
+private struct ScrollWheelCaptureView: NSViewRepresentable {
+    let onScroll: (IslandScrollSample) -> Void
+
+    func makeNSView(context: Context) -> CaptureView {
+        let view = CaptureView()
+        view.onScroll = onScroll
+        return view
+    }
+
+    func updateNSView(_ nsView: CaptureView, context: Context) {
+        nsView.onScroll = onScroll
+    }
+
+    static func dismantleNSView(_ nsView: CaptureView, coordinator: ()) {
+        nsView.stopMonitoring()
+    }
+
+    final class CaptureView: NSView {
+        var onScroll: ((IslandScrollSample) -> Void)?
+        private var localMonitor: Any?
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            window == nil ? stopMonitoring() : startMonitoring()
+        }
+
+        func stopMonitoring() {
+            if let localMonitor {
+                NSEvent.removeMonitor(localMonitor)
+                self.localMonitor = nil
             }
         }
 
-        deinit {
-            timer?.invalidate()
+        private func startMonitoring() {
+            guard localMonitor == nil else { return }
+            localMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) {
+                [weak self] event in
+                self?.handle(event)
+                return event
+            }
         }
-    }
-}
 
-#if DEBUG
-private struct DashboardPreviewScene: View {
-    @StateObject private var model = AppModel.dashboardPreview
-    let initiallyExpanded: Bool
-    let interfaceActive: Bool
-    let watchlistExpanded: Bool
-
-    var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [
-                    Color(red: 0.12, green: 0.18, blue: 0.28),
-                    Color(red: 0.34, green: 0.43, blue: 0.38),
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-
-            Circle()
-                .fill(.cyan.opacity(0.22))
-                .frame(width: 230, height: 230)
-                .blur(radius: 28)
-                .offset(x: 150, y: -170)
-
-            DashboardView(
-                model: model,
-                initiallyExpanded: initiallyExpanded,
-                interfaceActiveOverride: interfaceActive,
-                watchlistInitiallyExpanded: watchlistExpanded
+        private func handle(_ event: NSEvent) {
+            guard let window, event.window === window else { return }
+            let localPoint = convert(event.locationInWindow, from: nil)
+            guard bounds.contains(localPoint) else { return }
+            onScroll?(
+                IslandScrollSample(
+                    deltaY: event.scrollingDeltaY,
+                    phase: event.phase,
+                    momentumPhase: event.momentumPhase,
+                    timestamp: event.timestamp
+                )
             )
         }
-        .frame(
-            width: 320,
-            height: watchlistExpanded ? 360 : 100
-        )
-        .clipped()
+
+        deinit { stopMonitoring() }
     }
 }
-
-#Preview("Inactive · Watchlist Collapsed") {
-    DashboardPreviewScene(
-        initiallyExpanded: false,
-        interfaceActive: false,
-        watchlistExpanded: false
-    )
-}
-
-#Preview("Hover Active · Watchlist Expanded") {
-    DashboardPreviewScene(
-        initiallyExpanded: true,
-        interfaceActive: true,
-        watchlistExpanded: true
-    )
-}
-
-#endif
