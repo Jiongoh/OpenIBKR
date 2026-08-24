@@ -11,12 +11,11 @@ trading capability.
 
 ## Demo
 
-[![OpenIBKR floating dashboard demo](https://github.com/Jiongoh/OpenIBKR/releases/download/demo-assets/openibkr-demo.gif)](https://github.com/Jiongoh/OpenIBKR/releases/download/demo-assets/demo.mov)
+![OpenIBKR floating dashboard demo](https://github.com/Jiongoh/OpenIBKR/releases/download/demo-assets/openibkr-demo.gif)
 
 The preview plays automatically and shows the OpenIBKR floating dashboard
-expanding, collapsing and switching between watchlist symbols. Click it to open
-the high-quality recording. Both media files are hosted as GitHub Release assets
-and are not included in source checkouts.
+expanding, collapsing and switching between watchlist symbols. The sanitized
+demo is hosted as a GitHub Release asset and is not included in source checkouts.
 
 ## What it does
 
@@ -153,8 +152,7 @@ xcodebuild -project app/OpenIBKR.xcodeproj -scheme OpenIBKR \
   CODE_SIGNING_ALLOWED=NO test
 ```
 
-Normal automated tests use Fake data and do not require or access a live IBKR
-account. Live smoke testing is a separate, explicit procedure.
+Automated tests use Fake data and do not require or access a live IBKR account.
 
 ## Market-data behavior
 
@@ -193,25 +191,19 @@ The Helper persists the watchlist and public latest snapshot in a local SQLite
 database under the user's Application Support directory. Credentials, complete
 account identifiers and session tokens are excluded from that database.
 
-## Project status
+## Current limitations
 
-- Read-only IBKR feasibility and safety spike: complete
-- Local Helper and authenticated loopback protocol: implemented
-- SwiftUI/AppKit floating dashboard: implemented
-- Managed Helper lifecycle and reconnect handling: implemented
-- Source build and release scripts: available
-- Developer ID signing, notarization and public binary distribution: pending
-- Physical sleep/wake acceptance: manual validation still required
+- No signed or notarized public binary is currently distributed.
+- Live market-data availability depends on the user's IBKR and optional Alpaca
+  entitlements.
+- Physical sleep/wake and IB Gateway restart behavior should be verified on the
+  target Mac before relying on the dashboard for extended unattended use.
 
 ## Documentation
 
-- [Development guide](docs/DEVELOPMENT.md)
 - [IBKR setup](docs/IBKR_SETUP.md)
 - [Release process](docs/RELEASE.md)
-- [Stage 1 results](docs/SPIKE_RESULTS.md)
-- [Stage 2 results](docs/STAGE2_RESULTS.md)
-- [Stage 3 results](docs/STAGE3_RESULTS.md)
-- [Stage 4 results](docs/STAGE4_RESULTS.md)
+- [Local Helper protocol](protocol/README.md)
 
 ## Disclaimer
 

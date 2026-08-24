@@ -10,7 +10,7 @@ from ibapi.message import OUT
 from openibkr_helper.adapters.live import LiveIBKRAdapter, _HelperIBKRClient
 from openibkr_helper.config import HelperSettings
 from openibkr_helper.events import QuoteEvent
-from openibkr_spike.readonly_client import ReadOnlyIBKRClient, TradingDisabledError
+from openibkr_helper.readonly_client import ReadOnlyIBKRClient, TradingDisabledError
 
 
 class LiveAdapterGuardTests(unittest.TestCase):

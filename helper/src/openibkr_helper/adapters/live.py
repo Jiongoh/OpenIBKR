@@ -9,7 +9,8 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from ibapi.contract import Contract, ContractDetails
-from openibkr_spike.readonly_client import ReadOnlyIBKRClient, mask_identifier
+
+from openibkr_helper.readonly_client import ReadOnlyIBKRClient, mask_identifier
 
 from ..config import HelperSettings
 from ..events import (

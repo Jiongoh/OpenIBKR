@@ -4,8 +4,7 @@ import unittest
 
 from ibapi.common import PROTOBUF_MSG_ID
 from ibapi.message import OUT
-from openibkr_spike.cli import build_parser, run
-from openibkr_spike.readonly_client import (
+from openibkr_helper.readonly_client import (
     ALLOWED_OUTGOING,
     FORBIDDEN_TRADING_OUTGOING,
     ReadOnlyIBKRClient,
@@ -102,14 +101,6 @@ class ReadOnlyGuardTests(unittest.TestCase):
         self.assertEqual(mask_identifier("U00000000"), "*****0000")
         self.assertEqual(mask_identifier("1234"), "****")
         self.assertEqual(mask_identifier(""), "")
-
-    def test_reconnect_probe_rejects_invalid_timeouts_without_connecting(self) -> None:
-        args = build_parser().parse_args(
-            ["reconnect", "--outage-timeout", "0", "--reconnect-timeout", "1"]
-        )
-        result = run(args)
-        self.assertFalse(result["success"])
-        self.assertIn("Reconnect timeouts must be positive", result["failure"])
 
 
 if __name__ == "__main__":

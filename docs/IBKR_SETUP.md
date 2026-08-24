@@ -23,8 +23,8 @@ stored in this repository.
 - Read-Only API: enabled
 - Allow connections from localhost only: enabled
 - Trusted IPs: `127.0.0.1` only
-- Spike host: literal `127.0.0.1`
-- Spike client ID: `71`; client ID `0` is forbidden
+- OpenIBKR host: literal `127.0.0.1`
+- OpenIBKR client ID: nonzero; client ID `0` is forbidden
 
 Port `4003` is the example deployment value. A deployment may choose another
 unused local port, provided Gateway and OpenIBKR use the same value.
@@ -38,7 +38,7 @@ unused local port, provided Gateway and OpenIBKR use the same value.
    macOS application bundle.
 5. Treat market data entitlements as deployment-specific. Never assume that
    real-time data is available; display the market-data type returned by IBKR.
-6. Do not enable regulatory snapshots in development; the spike hardcodes
+6. Do not enable regulatory snapshots; OpenIBKR hardcodes
    `regulatorySnapshot=false`.
 
 ## Safe verification
@@ -49,23 +49,11 @@ Run automated protection tests before every live integration check:
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-Then validate in stages, never starting with the combined mode:
+Then launch OpenIBKR with Gateway already running and confirm that Settings
+shows a connected, read-only IBKR source. Verify that account identifiers stay
+masked and that unavailable or delayed market data is labelled accurately.
 
-```sh
-.venv/bin/openibkr-readonly-spike connection --port 4003
-.venv/bin/openibkr-readonly-spike account --port 4003 --observe-seconds 5
-.venv/bin/openibkr-readonly-spike market --port 4003 --market-data-mode delayed --observe-seconds 3
-```
-
-The real-time entitlement probe is optional and does not purchase a
-subscription:
-
-```sh
-.venv/bin/openibkr-readonly-spike market --port 4003 --market-data-mode live
-```
-
-For the final reconnect test, start the reconnect probe, wait until it prints
-`ready_for_manual_gateway_restart`, then manually exit and reopen IB Gateway on
-the same port.  The probe retries with exponential backoff and verifies that
-account/P&L and market-data subscriptions are restored.  The probe never
-stops or starts Gateway itself.
+For reconnect verification, manually exit and reopen IB Gateway on the same
+port. OpenIBKR should enter a recoverable disconnected state, reconnect, and
+restore account/P&L and market-data subscriptions without restarting Gateway
+itself.

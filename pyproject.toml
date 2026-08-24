@@ -25,9 +25,7 @@ packaging = [
 ]
 
 [project.scripts]
-openibkr-readonly-spike = "openibkr_spike.cli:main"
 openibkr-helper = "openibkr_helper.main:main"
-openibkr-helper-live-smoke = "openibkr_helper.live_smoke:main"
 
 [tool.setuptools]
 package-dir = {"" = "helper/src"}

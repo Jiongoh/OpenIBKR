@@ -7,11 +7,12 @@ A Developer ID identity and notarization are only needed for public distribution
 
 ## Prerequisites
 
-1. Keep `Apple Development: jiongicloud@163.com (UF5VASXS5P)` and its private
-   key in the login Keychain. Renew it with the same Personal Team when it
-   expires; the Team ID remains stable.
-2. Confirm `/usr/bin/codesign` can use the private key. The signing script
-   rejects a build unless both the app and helper contain Team ID `J77H7K9M4K`.
+1. Keep a valid Apple Development identity and its private key in the login
+   Keychain. Renew it with the same Personal Team when it expires so the Team
+   ID remains stable.
+2. Confirm `/usr/bin/codesign` can use the private key. By default the signing
+   script selects the first valid Apple Development identity and requires the
+   app and helper to contain the same nonempty Team ID.
 3. Create a `notarytool` Keychain profile locally. Do not place Apple account
    credentials, app-specific passwords or API keys in this repository.
 4. Keep IB Gateway credentials and the local SQLite database outside the build.
@@ -31,8 +32,10 @@ and nested Helper are `arm64` before using it.
 ## Sign and verify
 
 ```sh
-export OPENIBKR_SIGNING_IDENTITY='Apple Development: jiongicloud@163.com (UF5VASXS5P)'
-export OPENIBKR_EXPECTED_TEAM_ID='J77H7K9M4K'
+# Optional when more than one signing identity is installed:
+export OPENIBKR_SIGNING_IDENTITY='Apple Development: Certificate Name (TEAM)'
+# Optional additional Team ID pin:
+export OPENIBKR_EXPECTED_TEAM_ID='XXXXXXXXXX'
 packaging/sign-app.sh /tmp/OpenIBKRReleaseDerivedData/Build/Products/Release/OpenIBKR.app
 ```
 

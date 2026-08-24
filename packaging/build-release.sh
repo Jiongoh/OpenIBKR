@@ -4,14 +4,6 @@ set -eu
 PROJECT_ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 DERIVED_DATA=${OPENIBKR_DERIVED_DATA:-/tmp/OpenIBKRReleaseDerivedData}
 INSTALL_PATH=/Applications/OpenIBKR.app
-# The free Apple Development identity provides a stable Team ID without an
-# embedded provisioning profile. That stable partition identity is required
-# for Keychain access to survive replacement builds.
-OPENIBKR_SIGNING_IDENTITY=${OPENIBKR_SIGNING_IDENTITY:-Apple Development: jiongicloud@163.com (UF5VASXS5P)}
-OPENIBKR_EXPECTED_TEAM_ID=${OPENIBKR_EXPECTED_TEAM_ID:-J77H7K9M4K}
-export OPENIBKR_SIGNING_IDENTITY
-export OPENIBKR_EXPECTED_TEAM_ID
-
 PREVIOUS_REQUIREMENT=
 if [ -d "$INSTALL_PATH" ] && codesign --verify --deep --strict "$INSTALL_PATH" 2>/dev/null; then
   PREVIOUS_REQUIREMENT=$(

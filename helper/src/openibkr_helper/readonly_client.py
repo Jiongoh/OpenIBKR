@@ -1,7 +1,7 @@
-"""A deliberately tiny, fail-closed IBKR client for feasibility checks.
+"""Fail-closed IBKR client used by the local helper.
 
-This module is not a trading client.  It permits only the outgoing TWS message
-types needed to read account/P&L/position and top-of-book market data.  Every
+This module is not a trading client. It permits only the outgoing TWS message
+types needed to read account/P&L/position and top-of-book market data. Every
 other outgoing message ID is rejected before it reaches the socket.
 """
 
@@ -342,7 +342,7 @@ class ReadOnlyIBKRClient(EWrapper, EClient):
             }
         )
         # Positive request IDs are used only for contract/account/market reads
-        # in this spike.  A request-scoped error after market subscription is a
+        # in this helper. A request-scoped error after market subscription is a
         # valid entitlement result and must not be confused with a tick.
         if reqId >= 0:
             self.snapshot.market_request_error_received = True
