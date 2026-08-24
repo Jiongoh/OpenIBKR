@@ -2,11 +2,11 @@ import AppKit
 import SwiftUI
 
 enum DashboardLayout {
-    static let shadowPadding: CGFloat = 14
+    static let shadowPadding: CGFloat = 0
     static let collapsedIslandSize = CGSize(width: 520, height: 20)
     static let expandedIslandSize = CGSize(width: 520, height: 148)
     static let drawerLipDepth: CGFloat = 14
-    static let expandedTopShoulderDepth: CGFloat = 5
+    static let expandedTopShoulderDepth: CGFloat = 2
     static let islandAnimation = Animation.spring(
         response: 0.42,
         dampingFraction: 0.86,
@@ -19,6 +19,7 @@ enum DashboardLayout {
     static let maximumWatchlistHeight: CGFloat = 284
     static let moduleSpacing: CGFloat = 12
     static let watchlistAccessoryWidth: CGFloat = 24
+    static let watchlistIndicatorLimit = 5
     static let pnlDragButtonExclusionWidth: CGFloat = 34
     static let collapsedPnLWidth: CGFloat = 117
     static let expandedModuleWidth: CGFloat = 243
@@ -126,6 +127,19 @@ enum IslandWatchlistSelection {
         guard count > 0 else { return nil }
         return (current + offset % count + count) % count
     }
+
+    static func visibleIndicatorRange(
+        selected: Int,
+        count: Int,
+        limit: Int = DashboardLayout.watchlistIndicatorLimit
+    ) -> Range<Int> {
+        guard count > 0, limit > 0 else { return 0..<0 }
+        let visibleCount = min(count, limit)
+        let maximumStart = count - visibleCount
+        let centeredStart = selected - visibleCount / 2
+        let start = min(max(0, centeredStart), maximumStart)
+        return start..<(start + visibleCount)
+    }
 }
 
 struct IslandScrollSample {
@@ -142,15 +156,21 @@ struct PointerTrackingSample {
 
 struct IslandScrollGestureGate {
     private(set) var accumulator: CGFloat = 0
-    private(set) var hasSteppedInGesture = false
     private var lastEventTimestamp = -Double.infinity
+    private var lastStepTimestamp = -Double.infinity
 
     let threshold: CGFloat
     let discreteGestureGap: TimeInterval
+    let repeatInterval: TimeInterval
 
-    init(threshold: CGFloat = 22, discreteGestureGap: TimeInterval = 0.24) {
+    init(
+        threshold: CGFloat = 14,
+        discreteGestureGap: TimeInterval = 0.24,
+        repeatInterval: TimeInterval = 0.09
+    ) {
         self.threshold = threshold
         self.discreteGestureGap = discreteGestureGap
+        self.repeatInterval = repeatInterval
     }
 
     mutating func consume(_ sample: IslandScrollSample) -> Int? {
@@ -177,19 +197,19 @@ struct IslandScrollGestureGate {
             if endsGesture { reset() }
         }
 
-        guard !hasSteppedInGesture else { return nil }
         accumulator += sample.deltaY
         guard abs(accumulator) >= threshold else { return nil }
+        guard sample.timestamp - lastStepTimestamp >= repeatInterval else { return nil }
 
-        hasSteppedInGesture = true
         let direction = accumulator < 0 ? 1 : -1
         accumulator = 0
+        lastStepTimestamp = sample.timestamp
         return direction
     }
 
     mutating func reset() {
         accumulator = 0
-        hasSteppedInGesture = false
+        lastStepTimestamp = -Double.infinity
     }
 }
 
@@ -463,11 +483,6 @@ private struct DynamicIslandView: View {
             alignment: .top
         )
         .clipped()
-        .shadow(
-            color: .black.opacity(isExpanded ? 0.35 : 0.13),
-            radius: isExpanded ? 14 : 7,
-            y: isExpanded ? 5 : 2
-        )
         .onTapGesture {
             guard !isExpanded else { return }
             setHovering(true)
@@ -559,6 +574,65 @@ private struct DynamicIslandView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .overlay(alignment: .bottomTrailing) {
+            if !quoteIDs.isEmpty, !isAddingSymbol, model.contractCandidates.isEmpty {
+                watchlistPositionIndicator
+            }
+        }
+        .overlay {
+            ScrollWheelCaptureView { sample in
+                handleScroll(sample)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .allowsHitTesting(false)
+        }
+    }
+
+    private var watchlistPositionIndicator: some View {
+        let selectedIndex = selectedQuoteID.flatMap { quoteIDs.firstIndex(of: $0) } ?? 0
+        let visibleRange = IslandWatchlistSelection.visibleIndicatorRange(
+            selected: selectedIndex,
+            count: quoteIDs.count
+        )
+
+        return HStack(spacing: 4) {
+            ForEach(Array(visibleRange), id: \.self) { index in
+                let isSelected = index == selectedIndex
+                Button {
+                    selectQuote(at: index)
+                } label: {
+                    Circle()
+                        .fill(
+                            isSelected
+                                ? Color(red: 0.48, green: 0.74, blue: 1.0)
+                                : Color.white.opacity(0.22)
+                        )
+                        .frame(width: 5, height: 5)
+                        .scaleEffect(isSelected ? 1.32 : 1)
+                        .shadow(
+                            color: isSelected
+                                ? Color(red: 0.48, green: 0.74, blue: 1.0).opacity(0.32)
+                                : .clear,
+                            radius: 2
+                        )
+                        .frame(width: 11, height: 11)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(
+                    "Show \(model.snapshot.quotes[index].instrument.symbol), "
+                        + "watchlist item \(index + 1) of \(quoteIDs.count)"
+                )
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
+                .transition(.scale(scale: 0.55).combined(with: .opacity))
+            }
+        }
+        .animation(
+            .spring(response: 0.28, dampingFraction: 0.78, blendDuration: 0.05),
+            value: selectedQuoteID
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Watchlist position")
     }
 
     private func ticker(_ quote: QuoteSnapshot) -> some View {
@@ -610,13 +684,6 @@ private struct DynamicIslandView: View {
             .accessibilityHidden(true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .overlay {
-            ScrollWheelCaptureView { sample in
-                handleScroll(sample)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .allowsHitTesting(false)
-        }
         .contentShape(Rectangle())
         .transition(
             .asymmetric(
@@ -839,10 +906,14 @@ private struct DynamicIslandView: View {
                 count: ids.count
             )
         else { return }
-        let nextID = ids[nextIndex]
+        selectQuote(at: nextIndex)
+    }
 
+    private func selectQuote(at index: Int) {
+        guard quoteIDs.indices.contains(index) else { return }
+        let nextID = quoteIDs[index]
         guard nextID != selectedQuoteID else { return }
-        withAnimation(.easeInOut(duration: 0.18)) {
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.78, blendDuration: 0.05)) {
             selectedQuoteID = nextID
         }
     }

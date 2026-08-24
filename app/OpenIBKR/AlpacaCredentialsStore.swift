@@ -26,12 +26,12 @@ enum AlpacaCredentialsStoreError: LocalizedError {
 }
 
 struct AlpacaCredentialsStore: Sendable {
-    // Do not reuse the legacy `com.openibkr.alpaca.marketdata` service. Its
-    // items were created by ad-hoc-signed builds and carry per-build legacy
-    // ACL partitions. Even a read can summon SecurityAgent before query-level
-    // UI controls are honored. New items start clean with the stable Release
-    // designated requirement applied by `trustedAccess()` below.
-    static let service = "com.openibkr.alpaca.marketdata.v2"
+    // Do not query the v1 or v2 services. Those items were created by builds
+    // without a stable Team ID and contain per-build cdhash partitions. Even a
+    // read can summon SecurityAgent before query-level UI controls are honored.
+    // v3 is created only by the Apple Development signed Release, whose stable
+    // Team ID allows Keychain access to survive binary updates.
+    static let service = "com.openibkr.alpaca.marketdata.v3"
     private static let keyIDAccount = "api-key-id"
     private static let secretAccount = "api-secret-key"
     private static let installedAppPath = "/Applications/OpenIBKR.app"
@@ -75,9 +75,9 @@ struct AlpacaCredentialsStore: Sendable {
             kSecAttrAccount: account,
             kSecReturnData: true,
             kSecMatchLimit: kSecMatchLimitOne,
-            // v2 items should never need UI because they are created with the
-            // stable Release requirement. Keep this guard for corrupt or
-            // manually modified entries.
+            // v3 items should never need UI because they are created by a
+            // Team-ID-signed Release. Keep this guard for corrupt or manually
+            // modified entries.
             kSecUseAuthenticationUI: kSecUseAuthenticationUISkip,
         ]
         var result: CFTypeRef?
@@ -99,11 +99,9 @@ struct AlpacaCredentialsStore: Sendable {
         let attributes: [CFString: Any] = [
             kSecValueData: Data(value.utf8),
             kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-            // Existing login-keychain items created without an explicit
-            // access object retain the legacy "confirm every new code hash"
-            // ACL. Replace it on every write with a trusted-application ACL
-            // tied to OpenIBKR's stable designated requirement instead of a
-            // per-build CDHash.
+            // Keep the restricted ACL tied to the installed Release. The
+            // Apple-issued signing identity also supplies the stable Team ID
+            // used by macOS's partition ACL.
             kSecAttrAccess: try trustedAccess(),
         ]
         let updateStatus = SecItemUpdate(identity as CFDictionary, attributes as CFDictionary)

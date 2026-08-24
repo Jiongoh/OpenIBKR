@@ -93,8 +93,9 @@ python3.13 -m venv .venv
 packaging/build-release.sh
 ```
 
-The build script prints the generated `OpenIBKR.app` path. This local build is
-unsigned; public distribution requires Developer ID signing and Apple
+The build script prints the installed `OpenIBKR.app` path. The local build is
+signed with the configured Apple Development identity and embeds no provisioning
+profile. Public distribution still requires Developer ID signing and Apple
 notarization as described in the [release guide](docs/RELEASE.md).
 
 OpenIBKR defaults to the read-only Gateway adapter on port `4003`. Its Settings

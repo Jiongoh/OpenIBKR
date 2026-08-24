@@ -23,7 +23,10 @@ final class FloatingPanelController: NSWindowController {
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = false
-        panel.isMovable = true
+        // The island is a fixed top-of-screen surface, never a movable window.
+        // Keep both AppKit dragging paths disabled so the panel cannot leave its
+        // anchor even temporarily during a pointer drag.
+        panel.isMovable = false
         panel.isMovableByWindowBackground = false
         panel.hidesOnDeactivate = false
         // The compact island is anchored in the macOS control-bar area. A
@@ -148,7 +151,8 @@ final class FloatingPanelController: NSWindowController {
     private func setExpandedState(_ expanded: Bool) {
         pendingCollapsedResize?.cancel()
         isExpanded = expanded
-        window?.isMovableByWindowBackground = expanded
+        window?.isMovable = false
+        window?.isMovableByWindowBackground = false
 
         guard expanded, let panel = window else { return }
         let expandedContentSize = DashboardLayout.contentSize(expanded: true)

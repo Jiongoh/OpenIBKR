@@ -154,7 +154,11 @@ struct MarketDataStatus: Codable, Equatable {
 
     var displayName: String {
         switch provider {
-        case "alpaca_overnight": active ? "Alpaca Overnight · Active" : "Alpaca Overnight · Standby"
+        case "alpaca_overnight":
+            if active { "Alpaca Overnight · Active" }
+            else if error != nil { "Alpaca Overnight · Unavailable" }
+            else if configured && lastUpdateAt == nil { "Alpaca Overnight · Configured" }
+            else { "Alpaca Overnight · Standby" }
         default: "IB Gateway"
         }
     }

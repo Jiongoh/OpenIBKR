@@ -2,11 +2,19 @@ import XCTest
 @testable import OpenIBKR
 
 final class ProtocolModelsTests: XCTestCase {
+    func testAlpacaCredentialsUseTeamIDSignedV3KeychainService() {
+        XCTAssertEqual(
+            AlpacaCredentialsStore.service,
+            "com.openibkr.alpaca.marketdata.v3"
+        )
+    }
+
     @MainActor
     func testFloatingPanelAdaptsToContentAndDisablesBackgroundDragging() throws {
         let controller = FloatingPanelController(model: AppModel())
         let window = try XCTUnwrap(controller.window)
         XCTAssertFalse(window.hasShadow)
+        XCTAssertFalse(window.isMovable)
         XCTAssertFalse(window.isMovableByWindowBackground)
         XCTAssertFalse(window.styleMask.contains(.resizable))
     }
@@ -109,6 +117,32 @@ final class ProtocolModelsTests: XCTestCase {
         XCTAssertNil(IslandWatchlistSelection.wrappedIndex(current: 0, offset: 1, count: 0))
     }
 
+    func testWatchlistIndicatorShowsFiveItemsAndTracksSelection() {
+        XCTAssertEqual(
+            IslandWatchlistSelection.visibleIndicatorRange(selected: 0, count: 8),
+            0..<5
+        )
+        XCTAssertEqual(
+            IslandWatchlistSelection.visibleIndicatorRange(selected: 3, count: 8),
+            1..<6
+        )
+        XCTAssertEqual(
+            IslandWatchlistSelection.visibleIndicatorRange(selected: 7, count: 8),
+            3..<8
+        )
+    }
+
+    func testWatchlistIndicatorUsesActualCountBelowFiveAndHandlesEmptyLists() {
+        XCTAssertEqual(
+            IslandWatchlistSelection.visibleIndicatorRange(selected: 1, count: 3),
+            0..<3
+        )
+        XCTAssertEqual(
+            IslandWatchlistSelection.visibleIndicatorRange(selected: 0, count: 0),
+            0..<0
+        )
+    }
+
     func testScrollGestureGateSwitchesOnceAndIgnoresMomentum() {
         var gate = IslandScrollGestureGate(threshold: 20, discreteGestureGap: 0.24)
 
@@ -172,6 +206,69 @@ final class ProtocolModelsTests: XCTestCase {
                 )
             ),
             -1
+        )
+    }
+
+    func testDefaultScrollGestureGateRespondsToLightScroll() {
+        var gate = IslandScrollGestureGate()
+
+        XCTAssertNil(
+            gate.consume(
+                IslandScrollSample(
+                    deltaY: -6,
+                    phase: .began,
+                    momentumPhase: [],
+                    timestamp: 1
+                )
+            )
+        )
+        XCTAssertEqual(
+            gate.consume(
+                IslandScrollSample(
+                    deltaY: -8,
+                    phase: .changed,
+                    momentumPhase: [],
+                    timestamp: 1.02
+                )
+            ),
+            1
+        )
+    }
+
+    func testScrollGestureGateRepeatsWithinOneContinuousGesture() {
+        var gate = IslandScrollGestureGate()
+
+        XCTAssertEqual(
+            gate.consume(
+                IslandScrollSample(
+                    deltaY: -14,
+                    phase: .began,
+                    momentumPhase: [],
+                    timestamp: 1
+                )
+            ),
+            1
+        )
+        XCTAssertNil(
+            gate.consume(
+                IslandScrollSample(
+                    deltaY: -14,
+                    phase: .changed,
+                    momentumPhase: [],
+                    timestamp: 1.04
+                )
+            )
+        )
+        XCTAssertEqual(
+            gate.consume(
+                IslandScrollSample(
+                    deltaY: -1,
+                    phase: .changed,
+                    momentumPhase: [],
+                    timestamp: 1.10
+                )
+            ),
+            1
         )
     }
 
@@ -417,6 +514,25 @@ final class ProtocolModelsTests: XCTestCase {
         XCTAssertEqual(MarketDataKind.delayed.displayName, "Delayed")
         XCTAssertEqual(MarketDataKind.overnightIndicative.displayName, "Overnight Indicative")
         XCTAssertNotEqual(MarketDataKind.realTime.displayName, MarketDataKind.delayed.displayName)
+    }
+
+    func testAlpacaStatusDoesNotClaimActiveBeforeSuccessfulData() {
+        let configured = MarketDataStatus(
+            provider: "alpaca_overnight",
+            configured: true,
+            active: false,
+            lastUpdateAt: nil,
+            error: nil
+        )
+        var unavailable = configured
+        unavailable.error = "Alpaca market-data credentials are invalid or have been revoked"
+        var active = configured
+        active.active = true
+        active.lastUpdateAt = Date()
+
+        XCTAssertEqual(configured.displayName, "Alpaca Overnight · Configured")
+        XCTAssertEqual(unavailable.displayName, "Alpaca Overnight · Unavailable")
+        XCTAssertEqual(active.displayName, "Alpaca Overnight · Active")
     }
 
     func testDecodesAlpacaOvernightStatusAndTrend() throws {

@@ -3,9 +3,13 @@ from __future__ import annotations
 import unittest
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from unittest.mock import Mock, patch
+from urllib.error import HTTPError
 
 from openibkr_helper.alpaca import (
     ALLOWED_ALPACA_PATHS,
+    AlpacaAuthenticationError,
+    AlpacaEntitlementError,
     AlpacaHTTPTransport,
     AlpacaMarketDataError,
     AlpacaOvernightProvider,
@@ -45,6 +49,28 @@ class AlpacaMarketDataTests(unittest.TestCase):
         rendered = repr(credentials)
         self.assertNotIn(credentials.key_id, rendered)
         self.assertNotIn(credentials.secret_key, rendered)
+
+    def test_transport_distinguishes_invalid_credentials_from_feed_entitlement(self) -> None:
+        credentials = AlpacaCredentials(
+            key_id="PKTEST1234567890",
+            secret_key="secret-value-that-must-never-be-logged",
+        )
+        for status, error_type, message in (
+            (401, AlpacaAuthenticationError, "invalid or have been revoked"),
+            (403, AlpacaEntitlementError, "feed 'overnight' is not permitted"),
+        ):
+            with self.subTest(status=status):
+                transport = AlpacaHTTPTransport()
+                transport._opener = Mock()
+                transport._opener.open.side_effect = HTTPError(
+                    "https://data.alpaca.markets", status, "error", {}, None
+                )
+                with self.assertRaisesRegex(error_type, message):
+                    transport._get_json(
+                        "/v2/stocks/snapshots",
+                        {"symbols": "AAPL", "feed": "overnight"},
+                        credentials,
+                    )
 
     def test_overnight_session_uses_new_york_clock(self) -> None:
         self.assertTrue(is_overnight_session(datetime(2026, 8, 17, 1, 0, tzinfo=UTC)))
@@ -105,7 +131,46 @@ class _HistoryUnavailableTransport:
         }
 
 
+class _HistoryForbiddenTransport(_HistoryUnavailableTransport):
+    async def get_json(self, path, query, credentials):  # noqa: ANN001, ANN201
+        if path == "/v2/stocks/bars":
+            raise AlpacaEntitlementError("BOATS is not permitted")
+        return await super().get_json(path, query, credentials)
+
+
 class AlpacaProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_configured_provider_is_not_active_until_data_arrives(self) -> None:
+        provider = AlpacaOvernightProvider(_HistoryUnavailableTransport())
+        provider._credentials = AlpacaCredentials(
+            key_id="PKTEST1234567890",
+            secret_key="secret-value-that-must-never-be-logged",
+        )
+        overnight = datetime(2026, 8, 17, 1, 0, tzinfo=UTC)
+
+        self.assertFalse(provider.status(overnight).active)
+        self.assertFalse(provider.should_override_quotes(overnight))
+
+    async def test_configure_validates_before_returning_active_status(self) -> None:
+        provider = AlpacaOvernightProvider(_HistoryUnavailableTransport())
+        provider._instruments[1] = Instrument(
+            con_id=1,
+            symbol="AAPL",
+            sec_type="STK",
+            exchange="SMART",
+            currency="USD",
+        )
+        credentials = AlpacaCredentials(
+            key_id="PKTEST1234567890",
+            secret_key="secret-value-that-must-never-be-logged",
+        )
+
+        with patch("openibkr_helper.alpaca.is_overnight_session", return_value=True):
+            status = await provider.configure(credentials)
+            self.assertTrue(status.active)
+            self.assertIsNotNone(status.last_update_at)
+
+        await provider.stop()
+
     async def test_history_failure_does_not_block_current_overnight_quote(self) -> None:
         provider = AlpacaOvernightProvider(_HistoryUnavailableTransport())
         events = []
@@ -133,6 +198,25 @@ class AlpacaProviderTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(last_events[-1].value, Decimal("100.20"))
         self.assertTrue(provider._has_fresh_data)
+
+    async def test_boats_entitlement_failure_does_not_block_overnight_snapshot(self) -> None:
+        provider = AlpacaOvernightProvider(_HistoryForbiddenTransport())
+        provider._credentials = AlpacaCredentials(
+            key_id="PKTEST1234567890",
+            secret_key="secret-value-that-must-never-be-logged",
+        )
+        provider._instruments[1] = Instrument(
+            con_id=1,
+            symbol="AAPL",
+            sec_type="STK",
+            exchange="SMART",
+            currency="USD",
+        )
+
+        await provider._refresh()
+
+        self.assertTrue(provider._has_fresh_data)
+        self.assertIsNone(provider._last_error)
 
     async def test_in_memory_trends_expire_without_a_new_quote(self) -> None:
         provider = AlpacaOvernightProvider(_HistoryUnavailableTransport())

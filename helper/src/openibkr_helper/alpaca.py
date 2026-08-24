@@ -45,6 +45,10 @@ class AlpacaAuthenticationError(AlpacaMarketDataError):
     pass
 
 
+class AlpacaEntitlementError(AlpacaMarketDataError):
+    pass
+
+
 class _RejectRedirects(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN201
         raise AlpacaMarketDataError("Alpaca market-data redirect was rejected")
@@ -106,9 +110,14 @@ class AlpacaHTTPTransport:
                     raise AlpacaMarketDataError("Alpaca market-data request failed")
                 return json.loads(response.read(8 * 1024 * 1024))
         except HTTPError as exc:
-            if exc.code in {401, 403}:
+            if exc.code == 401:
                 raise AlpacaAuthenticationError(
-                    "Alpaca market-data credentials were rejected"
+                    "Alpaca market-data credentials are invalid or have been revoked"
+                ) from exc
+            if exc.code == 403:
+                feed = query.get("feed", "requested")
+                raise AlpacaEntitlementError(
+                    f"Alpaca market-data feed '{feed}' is not permitted for this account"
                 ) from exc
             if exc.code == 429:
                 raise AlpacaMarketDataError("Alpaca market-data rate limit reached") from exc
@@ -153,14 +162,24 @@ class AlpacaOvernightProvider:
         return self._credentials is not None
 
     def should_override_quotes(self, now: datetime | None = None) -> bool:
-        return self.configured and self._has_fresh_data and is_overnight_session(now)
+        return (
+            self.configured
+            and self._has_fresh_data
+            and self._last_error is None
+            and is_overnight_session(now)
+        )
 
     def status(self, now: datetime | None = None) -> MarketDataStatus:
         configured = self.configured
         return MarketDataStatus(
             provider="alpaca_overnight" if configured else "ibkr",
             configured=configured,
-            active=configured and is_overnight_session(now),
+            active=(
+                configured
+                and self._has_fresh_data
+                and self._last_error is None
+                and is_overnight_session(now)
+            ),
             last_update_at=self._last_update_at,
             error=self._last_error,
         )
@@ -182,6 +201,12 @@ class AlpacaOvernightProvider:
         self._last_error = None
         self._has_fresh_data = False
         self._last_history_refresh = None
+        self._last_update_at = None
+        if is_overnight_session() and self._instruments:
+            try:
+                await self._refresh()
+            except AlpacaMarketDataError as exc:
+                self._last_error = str(exc)
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._run(), name="openibkr-alpaca-overnight")
         self._wake.set()
@@ -262,8 +287,10 @@ class AlpacaOvernightProvider:
         ):
             try:
                 await self._refresh_history(credentials, now)
-            except AlpacaAuthenticationError:
-                raise
+            except (AlpacaAuthenticationError, AlpacaEntitlementError):
+                # Historical BOATS access varies by subscription. It is optional:
+                # a rejected history request must not block the live overnight snapshot.
+                pass
             except AlpacaMarketDataError:
                 # A missing or temporarily unavailable history entitlement must not
                 # prevent the current indicative overnight quote from updating.
@@ -298,8 +325,11 @@ class AlpacaOvernightProvider:
                     },
                     credentials,
                 )
-            except AlpacaAuthenticationError:
-                raise
+            except (AlpacaAuthenticationError, AlpacaEntitlementError):
+                # Authentication is validated authoritatively by the required snapshot
+                # request. BOATS history is an optional enhancement and may use a
+                # different entitlement.
+                continue
             except AlpacaMarketDataError:
                 continue
             bars_by_symbol = payload.get("bars", {}) if isinstance(payload, dict) else {}
@@ -322,6 +352,10 @@ class AlpacaOvernightProvider:
             {"symbols": ",".join(symbols), "feed": "overnight"},
             credentials,
         )
+        # A successful snapshot response proves that authentication and the required
+        # overnight feed are available, even when none of the requested symbols has a
+        # usable quote in this particular response.
+        self._last_error = None
         if not isinstance(payload, dict):
             return False
         snapshots = payload.get("snapshots", payload)

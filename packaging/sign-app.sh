@@ -2,30 +2,28 @@
 set -eu
 
 APP_PATH=${1:?usage: sign-app.sh /absolute/path/OpenIBKR.app}
-SIGNING_IDENTITY=${OPENIBKR_SIGNING_IDENTITY:-OpenIBKR Local}
+SIGNING_IDENTITY=${OPENIBKR_SIGNING_IDENTITY:-Apple Development: jiongicloud@163.com (UF5VASXS5P)}
+EXPECTED_TEAM_ID=${OPENIBKR_EXPECTED_TEAM_ID:-J77H7K9M4K}
 HELPER_PATH="$APP_PATH/Contents/Helpers/openibkr-helper"
 
-if [ "$SIGNING_IDENTITY" = "OpenIBKR Local" ]; then
-  IDENTITY_SHA1=$(
-    security find-identity -v -p codesigning \
-      | awk '/"OpenIBKR Local"/ { print tolower($2); exit }'
-  )
-  if [ -z "$IDENTITY_SHA1" ]; then
-    echo "OpenIBKR Local is not a valid code-signing identity in the login Keychain." >&2
-    exit 1
-  fi
+IDENTITY_SHA1=$(
+  security find-identity -v -p codesigning \
+    | awk -v name="$SIGNING_IDENTITY" 'index($0, "\"" name "\"") { print $2; exit }'
+)
+if [ -z "$IDENTITY_SHA1" ]; then
+  echo "$SIGNING_IDENTITY is not a valid code-signing identity in the login Keychain." >&2
+  exit 1
 fi
 
-# The local self-signed identity is intentionally used without a notarization
-# timestamp. Set OPENIBKR_SIGNING_TIMESTAMP=1 when using a timestamp-capable
-# Developer ID identity for a distributable build.
+# Local development builds intentionally omit a notarization timestamp. Set
+# OPENIBKR_SIGNING_TIMESTAMP=1 only for a timestamp-capable Developer ID build.
 #
 # PyInstaller's one-file helper extracts its embedded Python.framework at
 # launch. A helper signed with the hardened runtime asks macOS to enforce
 # library validation against that extracted framework. That fails for the
-# local self-signed identity because it has no Team ID. The helper is a child
-# process, so it does not need the app's hardened runtime; keep the runtime on
-# the native app and deliberately omit it from the helper.
+# development identity when its extracted libraries do not carry matching
+# signatures. The helper is a child process, so it does not need the app's
+# hardened runtime; keep the runtime on the native app and omit it here.
 TIMESTAMP_FLAG=
 if [ "${OPENIBKR_SIGNING_TIMESTAMP:-0}" = 1 ]; then
   TIMESTAMP_FLAG=--timestamp
@@ -39,13 +37,13 @@ codesign --force $TIMESTAMP_FLAG --sign "$SIGNING_IDENTITY" "$HELPER_PATH"
 codesign --force $TIMESTAMP_FLAG --options runtime --sign "$SIGNING_IDENTITY" "$APP_PATH"
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
-if [ "$SIGNING_IDENTITY" = "OpenIBKR Local" ]; then
-  SIGNED_REQUIREMENT=$(codesign -d -r- "$APP_PATH" 2>&1)
-  case "$SIGNED_REQUIREMENT" in
-    *"certificate leaf = H\"$IDENTITY_SHA1\""*) ;;
-    *)
-      echo "Signed app does not use the persistent OpenIBKR Local certificate requirement." >&2
-      exit 1
-      ;;
-  esac
-fi
+for SIGNED_COMPONENT in "$APP_PATH" "$HELPER_PATH"; do
+  TEAM_ID=$(
+    codesign -d --verbose=4 "$SIGNED_COMPONENT" 2>&1 \
+      | awk -F= '/^TeamIdentifier=/ { print $2; exit }'
+  )
+  if [ "$TEAM_ID" != "$EXPECTED_TEAM_ID" ]; then
+    echo "$SIGNED_COMPONENT has Team ID '$TEAM_ID'; expected '$EXPECTED_TEAM_ID'." >&2
+    exit 1
+  fi
+done
