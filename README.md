@@ -11,11 +11,12 @@ trading capability.
 
 ## Demo
 
-[![OpenIBKR floating dashboard demo](https://github.com/Jiongoh/OpenIBKR/releases/download/demo-assets/openibkr-demo-poster.png)](https://github.com/Jiongoh/OpenIBKR/releases/download/demo-assets/demo.mov)
+[![OpenIBKR floating dashboard demo](https://github.com/Jiongoh/OpenIBKR/releases/download/demo-assets/openibkr-demo.gif)](https://github.com/Jiongoh/OpenIBKR/releases/download/demo-assets/demo.mov)
 
-Click the preview to watch the OpenIBKR floating dashboard expand, collapse and
-switch between watchlist symbols. The video is hosted as a GitHub Release asset
-and is not included in source checkouts.
+The preview plays automatically and shows the OpenIBKR floating dashboard
+expanding, collapsing and switching between watchlist symbols. Click it to open
+the high-quality recording. Both media files are hosted as GitHub Release assets
+and are not included in source checkouts.
 
 ## What it does
 
