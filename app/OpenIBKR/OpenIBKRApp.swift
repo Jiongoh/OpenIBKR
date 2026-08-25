@@ -16,7 +16,7 @@ struct OpenIBKRApp: App {
         }
         Settings {
             SettingsView(model: appDelegate.model)
-                .frame(width: 500, height: 520)
+                .frame(width: 560, height: 470)
         }
     }
 }
@@ -145,92 +145,217 @@ private struct SettingsView: View {
     @State private var isSavingAlpaca = false
 
     var body: some View {
+        TabView {
+            gatewayPane
+                .tabItem { Label("Gateway", systemImage: "server.rack") }
+
+            marketDataPane
+                .tabItem { Label("Market Data", systemImage: "chart.xyaxis.line") }
+
+            generalPane
+                .tabItem { Label("General", systemImage: "gearshape") }
+        }
+        .scenePadding()
+    }
+
+    private var gatewayPane: some View {
         Form {
-            Section("IB Gateway") {
-                LabeledContent("Helper") {
-                    Text(model.endpointDescription)
-                        .foregroundStyle(.secondary)
-                }
+            Section {
                 LabeledContent("Connection") {
-                    Text(model.snapshot.connection.state.displayName)
+                    SettingsStatusBadge(
+                        title: model.snapshot.connection.state.displayName,
+                        color: gatewayStatusColor
+                    )
                 }
-                Picker("Account Data Source", selection: $helperAdapter) {
-                    Text("IB Gateway (Read-Only)").tag("ibkr")
-                    Text("Fake (Development)").tag("fake")
-                }
-                TextField("Gateway Port", value: $gatewayPort, format: .number.grouping(.never))
-            }
-
-            Section("Alpaca Overnight Market Data") {
-                LabeledContent("Status") {
-                    Text(model.snapshot.currentMarketData.displayName)
-                        .foregroundStyle(
-                            model.snapshot.currentMarketData.error == nil
-                                ? Color.secondary
-                                : Color.orange
-                        )
-                }
-                if model.hasAlpacaCredentials {
-                    Label("Paper API credentials are stored in macOS Keychain", systemImage: "lock.fill")
-                        .font(.caption)
+                LabeledContent("Local Helper") {
+                    Text(model.endpointDescription)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
                         .foregroundStyle(.secondary)
                 }
-                TextField(
-                    model.hasAlpacaCredentials ? "New API Key ID (leave blank to keep)" : "API Key ID",
-                    text: $alpacaKeyID
+            } header: {
+                SettingsSectionHeader(
+                    title: "IB Gateway",
+                    subtitle: "Read-only account and market-data connection",
+                    systemImage: "server.rack"
                 )
-                SecureField(
-                    model.hasAlpacaCredentials ? "New Secret Key (leave blank to keep)" : "Secret Key",
-                    text: $alpacaSecret
-                )
-                HStack {
-                    Button("Save & Connect") {
-                        saveAlpacaCredentials()
-                    }
-                    .disabled(
-                        isSavingAlpaca || alpacaKeyID.isEmpty || alpacaSecret.isEmpty
-                    )
-                    if model.hasAlpacaCredentials {
-                        Button("Remove", role: .destructive) {
-                            removeAlpacaCredentials()
-                        }
-                    }
-                    if isSavingAlpaca { ProgressView().controlSize(.small) }
-                }
-                if let error = alpacaSettingsError ?? model.snapshot.currentMarketData.error {
-                    Text(error).font(.caption).foregroundStyle(.orange)
-                } else if let message = model.alpacaCredentialMessage {
-                    Text(message).font(.caption).foregroundStyle(.secondary)
-                }
-                Text("Uses Alpaca only for U.S. overnight quotes and charts. No Alpaca trading or account endpoint exists in OpenIBKR.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
-            Section("Application") {
-                Toggle("Launch OpenIBKR at Login", isOn: $launchAtLogin)
-                    .onChange(of: launchAtLogin) { _, enabled in
-                        do {
-                            if enabled {
-                                try SMAppService.mainApp.register()
-                            } else {
-                                try SMAppService.mainApp.unregister()
-                            }
-                            launchAtLoginError = nil
-                        } catch {
-                            launchAtLoginError = error.localizedDescription
-                            launchAtLogin = SMAppService.mainApp.status == .enabled
-                        }
-                    }
-                if let launchAtLoginError {
-                    Text(launchAtLoginError).font(.caption).foregroundStyle(.orange)
+            Section {
+                Picker("Data Source", selection: $helperAdapter) {
+                    Text("IB Gateway (Read-Only)").tag("ibkr")
+                    Text("Fake Data (Development)").tag("fake")
                 }
-                Text("Restart the app after changing the account data source or port. Credentials and the one-time local Helper token are never written to project files.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                .pickerStyle(.menu)
+
+                TextField(
+                    "Gateway Port",
+                    value: $gatewayPort,
+                    format: .number.grouping(.never)
+                )
+                .frame(maxWidth: 150)
+            } header: {
+                Text("Connection")
+            } footer: {
+                Label(
+                    "Changes to the data source or port take effect after OpenIBKR restarts.",
+                    systemImage: "arrow.clockwise"
+                )
             }
         }
-        .padding()
+        .formStyle(.grouped)
+    }
+
+    private var marketDataPane: some View {
+        Form {
+            Section {
+                LabeledContent("Service") {
+                    SettingsStatusBadge(title: alpacaStatusTitle, color: alpacaStatusColor)
+                }
+                LabeledContent("Credentials") {
+                    Label(
+                        model.hasAlpacaCredentials ? "Stored in Keychain" : "Not Stored",
+                        systemImage: model.hasAlpacaCredentials ? "lock.fill" : "lock.open"
+                    )
+                    .foregroundStyle(model.hasAlpacaCredentials ? .secondary : .tertiary)
+                }
+                LabeledContent("Last Update") {
+                    if let date = model.snapshot.currentMarketData.lastUpdateAt {
+                        Text(date, style: .relative)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("No data received")
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            } header: {
+                SettingsSectionHeader(
+                    title: "Alpaca Overnight",
+                    subtitle: "Indicative U.S. quotes from 20:00–04:00 ET",
+                    systemImage: "moon.stars.fill"
+                )
+            }
+
+            Section {
+                LabeledContent("API Key ID") {
+                    TextField(
+                        model.hasAlpacaCredentials ? "Enter a replacement key" : "Required",
+                        text: $alpacaKeyID
+                    )
+                    .textFieldStyle(.roundedBorder)
+                }
+                LabeledContent("Secret Key") {
+                    SecureField(
+                        model.hasAlpacaCredentials ? "Enter a replacement secret" : "Required",
+                        text: $alpacaSecret
+                    )
+                    .textFieldStyle(.roundedBorder)
+                }
+
+                HStack(spacing: 8) {
+                    if model.hasAlpacaCredentials {
+                        Button("Remove Credentials", role: .destructive) {
+                            removeAlpacaCredentials()
+                        }
+                        .disabled(isSavingAlpaca)
+                    }
+                    Spacer()
+                    if isSavingAlpaca {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Button(model.hasAlpacaCredentials ? "Replace & Connect" : "Save & Connect") {
+                        saveAlpacaCredentials()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(
+                        isSavingAlpaca
+                            || alpacaKeyID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || alpacaSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    )
+                }
+            } header: {
+                Text("Paper API Credentials")
+            } footer: {
+                Text(
+                    "Credentials stay in this Mac's Keychain. OpenIBKR only calls Alpaca market-data endpoints and has no trading capability."
+                )
+            }
+
+            if let error = alpacaSettingsError ?? model.snapshot.currentMarketData.error {
+                Section {
+                    SettingsMessage(text: error, color: .orange, systemImage: "exclamationmark.triangle.fill")
+                }
+            } else if let message = model.alpacaCredentialMessage {
+                Section {
+                    SettingsMessage(text: message, color: .secondary, systemImage: "checkmark.circle.fill")
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var generalPane: some View {
+        Form {
+            Section {
+                Toggle("Launch OpenIBKR at Login", isOn: $launchAtLogin)
+                    .toggleStyle(.switch)
+                    .onChange(of: launchAtLogin) { _, enabled in
+                        updateLaunchAtLogin(enabled)
+                    }
+            } header: {
+                SettingsSectionHeader(
+                    title: "OpenIBKR",
+                    subtitle: "Application behavior on this Mac",
+                    systemImage: "gearshape.fill"
+                )
+            } footer: {
+                Text("OpenIBKR runs locally and starts its bundled Helper automatically.")
+            }
+
+            if let launchAtLoginError {
+                Section {
+                    SettingsMessage(
+                        text: launchAtLoginError,
+                        color: .orange,
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                }
+            }
+
+            Section("Privacy") {
+                Label("Credentials are stored in macOS Keychain", systemImage: "key.fill")
+                Label("Helper communication stays on 127.0.0.1", systemImage: "network.badge.shield.half.filled")
+                Label("IBKR access is permanently read-only", systemImage: "lock.shield.fill")
+            }
+            .foregroundStyle(.secondary)
+        }
+        .formStyle(.grouped)
+    }
+
+    private var gatewayStatusColor: Color {
+        switch model.snapshot.connection.state {
+        case .connected: .green
+        case .connecting, .recovering: .orange
+        case .disconnected, .stopped: .secondary
+        }
+    }
+
+    private var alpacaStatusTitle: String {
+        let status = model.snapshot.currentMarketData
+        if status.error != nil { return "Unavailable" }
+        if status.active { return "Active" }
+        if status.configured || model.hasAlpacaCredentials { return "Standby" }
+        return "Not Configured"
+    }
+
+    private var alpacaStatusColor: Color {
+        let status = model.snapshot.currentMarketData
+        if status.error != nil { return .orange }
+        if status.active { return .green }
+        if status.configured || model.hasAlpacaCredentials { return .blue }
+        return .secondary
     }
 
     private func saveAlpacaCredentials() {
@@ -263,5 +388,76 @@ private struct SettingsView: View {
             }
             isSavingAlpaca = false
         }
+    }
+
+    private func updateLaunchAtLogin(_ enabled: Bool) {
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+            launchAtLoginError = nil
+        } catch {
+            launchAtLoginError = error.localizedDescription
+            launchAtLogin = SMAppService.mainApp.status == .enabled
+        }
+    }
+}
+
+private struct SettingsSectionHeader: View {
+    let title: String
+    let subtitle: String
+    let systemImage: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.title3)
+                .foregroundStyle(.tint)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .textCase(nil)
+        .padding(.bottom, 4)
+    }
+}
+
+private struct SettingsStatusBadge: View {
+    let title: String
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(color)
+                .frame(width: 7, height: 7)
+            Text(title)
+                .foregroundStyle(.primary)
+        }
+        .font(.callout.weight(.medium))
+        .padding(.horizontal, 9)
+        .padding(.vertical, 4)
+        .background(.quaternary, in: Capsule())
+    }
+}
+
+private struct SettingsMessage: View {
+    let text: String
+    let color: Color
+    let systemImage: String
+
+    var body: some View {
+        Label(text, systemImage: systemImage)
+            .font(.callout)
+            .foregroundStyle(color)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
