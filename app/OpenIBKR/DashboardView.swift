@@ -460,10 +460,19 @@ private struct DynamicIslandView: View {
     }
 
     private var island: some View {
-        ZStack(alignment: .top) {
-            Color.black
+        let revealShape = DrawerRevealShape(expansion: isExpanded ? 1 : 0)
+
+        return ZStack(alignment: .top) {
+            // Draw the shell as the reveal geometry itself. Previously a full
+            // black rectangle relied on clipShape to hide its corners; if
+            // WindowServer discarded that cached mask while the panel was
+            // compact, the raw rectangle could remain visible until the next
+            // hover animation invalidated it.
+            revealShape
+                .fill(Color.black)
 
             expandedIsland
+                .mask(revealShape.fill(Color.white))
                 .allowsHitTesting(isExpanded)
                 .accessibilityHidden(!isExpanded)
         }
@@ -475,8 +484,7 @@ private struct DynamicIslandView: View {
             height: DashboardLayout.expandedIslandSize.height,
             alignment: .top
         )
-        .clipShape(DrawerRevealShape(expansion: isExpanded ? 1 : 0))
-        .contentShape(DrawerRevealShape(expansion: isExpanded ? 1 : 0))
+        .contentShape(revealShape)
         .frame(
             width: DashboardLayout.expandedIslandSize.width,
             height: currentVisibleHeight,

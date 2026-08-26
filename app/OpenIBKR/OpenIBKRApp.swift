@@ -75,6 +75,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             name: NSWorkspace.didWakeNotification,
             object: nil
         )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(activeSpaceDidChange),
+            name: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(screenParametersDidChange),
+            name: NSApplication.didChangeScreenParametersNotification,
+            object: nil
+        )
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -82,6 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         helperStartTask?.cancel()
         helperManager.stopSynchronously()
         NSWorkspace.shared.notificationCenter.removeObserver(self)
+        NotificationCenter.default.removeObserver(self)
     }
 
     func togglePanel() {
@@ -93,7 +106,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func systemDidWake() {
+        panelController?.refreshAfterSystemTransition()
         model.reconnect()
+    }
+
+    @objc private func activeSpaceDidChange() {
+        panelController?.refreshAfterSystemTransition()
+    }
+
+    @objc private func screenParametersDidChange() {
+        panelController?.refreshAfterSystemTransition()
     }
 
     private func startManagedHelper() {

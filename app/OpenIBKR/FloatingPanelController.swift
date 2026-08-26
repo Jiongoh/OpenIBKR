@@ -6,6 +6,7 @@ final class FloatingPanelController: NSWindowController {
     private static let collapseResizeDelay: Duration = .milliseconds(460)
     private var isExpanded = false
     private var pendingCollapsedResize: Task<Void, Never>?
+    private var hostingView: NSHostingView<DashboardView>?
 
     init(model: AppModel) {
         let initialContentSize = DashboardLayout.initialContentSize
@@ -71,6 +72,7 @@ final class FloatingPanelController: NSWindowController {
         hostingView.autoresizingMask = [.width, .height]
         contentView.addSubview(hostingView)
         panel.contentView = contentView
+        self.hostingView = hostingView
         hostingView.needsLayout = true
         setVisibleContentSize(initialContentSize)
         snapCollapsedToTopCenter()
@@ -84,14 +86,19 @@ final class FloatingPanelController: NSWindowController {
             snapCollapsedToTopCenter()
         }
         window?.orderFrontRegardless()
-        window?.contentView?.needsLayout = true
-        window?.contentView?.needsDisplay = true
-        window?.displayIfNeeded()
+        refreshHostingSurface()
     }
 
     func toggleVisibility() {
         guard let window else { return }
         window.isVisible ? window.orderOut(nil) : show()
+    }
+
+    func refreshAfterSystemTransition() {
+        if !isExpanded {
+            snapCollapsedToTopCenter()
+        }
+        refreshHostingSurface()
     }
 
     private func setVisibleContentSize(_ contentSize: CGSize) {
@@ -146,6 +153,20 @@ final class FloatingPanelController: NSWindowController {
         // from the compact island's center. This preserves the downward
         // expansion and keeps the full expanded content visible.
         panel.setFrame(targetFrame, display: true, animate: false)
+        refreshHostingSurface()
+    }
+
+    private func refreshHostingSurface() {
+        guard let panel = window, let hostingView else { return }
+        panel.contentView?.needsLayout = true
+        panel.contentView?.needsDisplay = true
+        hostingView.needsLayout = true
+        hostingView.needsDisplay = true
+        hostingView.layer?.setNeedsLayout()
+        hostingView.layer?.setNeedsDisplay()
+        panel.contentView?.layoutSubtreeIfNeeded()
+        hostingView.layoutSubtreeIfNeeded()
+        panel.displayIfNeeded()
     }
 
     private func setExpandedState(_ expanded: Bool) {
