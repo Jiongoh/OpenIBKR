@@ -357,6 +357,7 @@ private struct DynamicIslandView: View {
     @State private var suppressReactivationUntilPointerMoves = false
     @State private var scrollGate = IslandScrollGestureGate()
     @State private var isAddingSymbol = false
+    @State private var positionPopoverQuoteID: Int?
     @FocusState private var isSymbolFieldFocused: Bool
 
     private let interfaceActiveOverride: Bool?
@@ -413,6 +414,11 @@ private struct DynamicIslandView: View {
             }
             .onChange(of: quoteIDs) { previousIDs, currentIDs in
                 reconcileSelectedQuote()
+                if let positionPopoverQuoteID,
+                   !currentIDs.contains(positionPopoverQuoteID)
+                {
+                    self.positionPopoverQuoteID = nil
+                }
                 guard currentIDs.count > previousIDs.count else { return }
                 if let addedID = currentIDs.first(where: { !previousIDs.contains($0) }) {
                     selectedQuoteID = addedID
@@ -693,6 +699,17 @@ private struct DynamicIslandView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
+        .onTapGesture {
+            showPositionPopover(for: quote.id)
+        }
+        .popover(
+            isPresented: positionPopoverBinding(for: quote.id),
+            attachmentAnchor: .rect(.bounds),
+            arrowEdge: .top
+        ) {
+            positionPopover(for: quote)
+                .presentationBackground(Color(red: 0.055, green: 0.055, blue: 0.062))
+        }
         .transition(
             .asymmetric(
                 insertion: .opacity.combined(with: .offset(y: 6)),
@@ -882,6 +899,7 @@ private struct DynamicIslandView: View {
             // edge of the panel from immediately cancelling the expansion.
             try? await Task.sleep(for: .milliseconds(100))
             guard generation == hoverGeneration else { return }
+            guard positionPopoverQuoteID == nil else { return }
             suppressReactivationUntilPointerMoves = true
             withAnimation(DashboardLayout.islandAnimation) {
                 isExpanded = false
@@ -923,7 +941,203 @@ private struct DynamicIslandView: View {
         guard nextID != selectedQuoteID else { return }
         withAnimation(.spring(response: 0.28, dampingFraction: 0.78, blendDuration: 0.05)) {
             selectedQuoteID = nextID
+            if positionPopoverQuoteID != nil {
+                positionPopoverQuoteID = nextID
+            }
         }
+    }
+
+    private func showPositionPopover(for quoteID: Int) {
+        hoverGeneration += 1
+        positionPopoverQuoteID = positionPopoverQuoteID == quoteID ? nil : quoteID
+        if positionPopoverQuoteID == nil, !isPointerInside {
+            setHovering(false)
+        }
+    }
+
+    private func positionPopoverBinding(for quoteID: Int) -> Binding<Bool> {
+        Binding(
+            get: { positionPopoverQuoteID == quoteID },
+            set: { presented in
+                if presented {
+                    positionPopoverQuoteID = quoteID
+                } else if positionPopoverQuoteID == quoteID {
+                    positionPopoverQuoteID = nil
+                    if !isPointerInside {
+                        setHovering(false)
+                    }
+                }
+            }
+        )
+    }
+
+    @ViewBuilder
+    private func positionPopover(for quote: QuoteSnapshot) -> some View {
+        let position = model.snapshot.position(for: quote.id)
+
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(positionStatusColor(position))
+                    .frame(width: 7, height: 7)
+
+                Text(quote.instrument.symbol)
+                    .font(.system(size: 17, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.94))
+
+                Spacer()
+
+                Text(positionStatusText(position))
+                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.42))
+            }
+
+            if let position {
+                HStack(spacing: 18) {
+                    positionMetric(
+                        title: "POSITION",
+                        value: quantityText(position.quantity.value, quote: quote)
+                    )
+                    positionMetric(
+                        title: "MARKET VALUE",
+                        value: money(position.marketValue, currency: quote.instrument.currency),
+                        alignment: .trailing
+                    )
+                }
+                .padding(.top, 18)
+
+                Rectangle()
+                    .fill(Color.white.opacity(0.09))
+                    .frame(height: 1)
+                    .padding(.vertical, 14)
+
+                HStack(spacing: 18) {
+                    positionMetric(
+                        title: "AVG COST",
+                        value: money(position.averageCost, currency: quote.instrument.currency)
+                    )
+                    positionMetric(
+                        title: "UNREALIZED",
+                        value: signedMoney(
+                            position.unrealizedPnl,
+                            currency: quote.instrument.currency
+                        ),
+                        detail: signedPercent(position.returnPercent),
+                        color: positionDirectionColor(position.unrealizedPnl),
+                        alignment: .trailing
+                    )
+                }
+
+                HStack {
+                    Text("TODAY")
+                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                        .tracking(0.7)
+                        .foregroundStyle(Color.white.opacity(0.38))
+                    Spacer()
+                    Text(signedMoney(position.dailyPnl, currency: quote.instrument.currency))
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(positionDirectionColor(position.dailyPnl))
+                }
+                .padding(.top, 16)
+            } else {
+                VStack(spacing: 9) {
+                    Image(systemName: "briefcase")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(Color.white.opacity(0.34))
+                    Text("No position in this account")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(Color.white.opacity(0.48))
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 25)
+            }
+
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(positionStatusColor(position))
+                    .frame(width: 5, height: 5)
+                Text(position?.stale == false ? "IBKR · LIVE" : "IBKR · WAITING")
+                    .font(.system(size: 9, weight: .medium, design: .rounded))
+                    .tracking(0.65)
+                    .foregroundStyle(Color.white.opacity(0.32))
+            }
+            .padding(.top, position == nil ? 0 : 16)
+        }
+        .padding(18)
+        .frame(width: 288)
+        .background(Color(red: 0.055, green: 0.055, blue: 0.062))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Position details for \(quote.instrument.symbol)")
+    }
+
+    private func positionMetric(
+        title: String,
+        value: String,
+        detail: String? = nil,
+        color: Color = Color.white.opacity(0.86),
+        alignment: HorizontalAlignment = .leading
+    ) -> some View {
+        VStack(alignment: alignment, spacing: 5) {
+            Text(title)
+                .font(.system(size: 9, weight: .medium, design: .rounded))
+                .tracking(0.65)
+                .foregroundStyle(Color.white.opacity(0.36))
+            HStack(spacing: 5) {
+                Text(value)
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(color)
+                if let detail {
+                    Text(detail)
+                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(color.opacity(0.82))
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: alignment == .trailing ? .trailing : .leading)
+    }
+
+    private func positionStatusText(_ position: PositionSnapshot?) -> String {
+        guard let position else { return "NO POSITION" }
+        return position.stale ? "STALE" : "POSITION"
+    }
+
+    private func positionStatusColor(_ position: PositionSnapshot?) -> Color {
+        guard let position else { return Color.white.opacity(0.22) }
+        return position.stale ? Color.orange.opacity(0.72) : Color.green.opacity(0.86)
+    }
+
+    private func quantityText(_ quantity: Decimal, quote: QuoteSnapshot) -> String {
+        let places = quote.instrument.secType == "STK" ? 4 : 2
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.minimumFractionDigits = 0
+        formatter.maximumFractionDigits = places
+        return formatter.string(from: NSDecimalNumber(decimal: quantity)) ?? "—"
+    }
+
+    private func signedMoney(_ value: DecimalString?, currency: String?) -> String {
+        guard let value else { return "—" }
+        let magnitude = value.value < 0 ? -value.value : value.value
+        let formatted = money(DecimalString(magnitude), currency: currency)
+        if value.value > 0 { return "+\(formatted)" }
+        if value.value < 0 { return "-\(formatted)" }
+        return formatted
+    }
+
+    private func signedPercent(_ value: Decimal?) -> String {
+        guard let value else { return "—" }
+        let sign = value > 0 ? "+" : ""
+        return "\(sign)\(decimal(value, places: 2))%"
+    }
+
+    private func positionDirectionColor(_ value: DecimalString?) -> Color {
+        guard let value else { return Color.white.opacity(0.58) }
+        if value.value > 0 { return .green }
+        if value.value < 0 { return .red }
+        return Color.white.opacity(0.72)
     }
 
     private func reconcileSelectedQuote() {

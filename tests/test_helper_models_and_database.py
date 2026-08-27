@@ -16,6 +16,7 @@ from openibkr_helper.models import (
     Instrument,
     MarketDataKind,
     PnLSnapshot,
+    PositionSnapshot,
 )
 from pydantic import ValidationError
 
@@ -44,6 +45,22 @@ class ModelAndConfigTests(unittest.TestCase):
         payload = snapshot.model_dump(mode="json")
         self.assertEqual(payload["pnl"]["daily"], "12.34")
         self.assertEqual(payload["protocol_version"], 1)
+
+    def test_position_snapshot_serializes_decimal_fields(self) -> None:
+        snapshot = AppSnapshot(
+            positions=(
+                PositionSnapshot(
+                    con_id=265598,
+                    quantity=Decimal("12.5"),
+                    average_cost=Decimal("101.25"),
+                    unrealized_pnl=Decimal("8.75"),
+                    stale=False,
+                ),
+            )
+        )
+        payload = snapshot.model_dump(mode="json")
+        self.assertEqual(payload["positions"][0]["quantity"], "12.5")
+        self.assertEqual(payload["positions"][0]["average_cost"], "101.25")
 
     def test_protocol_rejects_unknown_fields_and_bad_query(self) -> None:
         with self.assertRaises(ValidationError):
@@ -125,6 +142,24 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(restored.sequence, 42)
         self.assertEqual(restored.account.account_masked, "*****TEST")
         self.assertEqual(restored.pnl.daily, Decimal("12.34"))
+
+    def test_public_snapshot_does_not_persist_positions(self) -> None:
+        self.database.open()
+        snapshot = AppSnapshot(
+            positions=(
+                PositionSnapshot(
+                    con_id=self.instrument.con_id,
+                    quantity=Decimal("10"),
+                    average_cost=Decimal("123.45"),
+                    stale=False,
+                ),
+            )
+        )
+        self.database.save_public_snapshot(snapshot)
+        restored = self.database.load_public_snapshot()
+        self.assertIsNotNone(restored)
+        assert restored is not None
+        self.assertEqual(restored.positions, ())
 
     def test_pnl_minute_snapshot_is_deduplicated(self) -> None:
         self.database.open()

@@ -21,6 +21,10 @@ class ReadOnlyGuardTests(unittest.TestCase):
         self.assertTrue(FORBIDDEN_TRADING_OUTGOING)
         self.assertTrue(FORBIDDEN_TRADING_OUTGOING.isdisjoint(ALLOWED_OUTGOING))
 
+    def test_single_position_pnl_reads_are_explicitly_allowlisted(self) -> None:
+        self.assertIn(OUT.REQ_PNL_SINGLE, ALLOWED_OUTGOING)
+        self.assertIn(OUT.CANCEL_PNL_SINGLE, ALLOWED_OUTGOING)
+
     def test_every_known_non_allowlisted_message_fails_closed(self) -> None:
         for outgoing in OUT:
             if outgoing in ALLOWED_OUTGOING:

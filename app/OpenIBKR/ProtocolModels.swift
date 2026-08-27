@@ -137,6 +137,27 @@ struct QuoteSnapshot: Codable, Identifiable {
     }
 }
 
+struct PositionSnapshot: Codable, Identifiable {
+    var conId: Int
+    var quantity: DecimalString
+    var averageCost: DecimalString
+    var marketValue: DecimalString?
+    var dailyPnl: DecimalString?
+    var unrealizedPnl: DecimalString?
+    var realizedPnl: DecimalString?
+    var receivedAt: Date?
+    var stale: Bool
+
+    var id: Int { conId }
+
+    var returnPercent: Decimal? {
+        let basis = quantity.value * averageCost.value
+        let magnitude = basis < 0 ? -basis : basis
+        guard magnitude > 0, let unrealizedPnl else { return nil }
+        return unrealizedPnl.value / magnitude * 100
+    }
+}
+
 struct MarketDataStatus: Codable, Equatable {
     var provider: String
     var configured: Bool
@@ -172,6 +193,7 @@ struct AppSnapshot: Codable {
     var account: AccountSnapshot
     var pnl: PnLSnapshot
     var quotes: [QuoteSnapshot]
+    var positions: [PositionSnapshot]? = nil
     var marketData: MarketDataStatus? = nil
 
     var dailyPnLPercent: Decimal? {
@@ -186,6 +208,10 @@ struct AppSnapshot: Codable {
     }
 
     var currentMarketData: MarketDataStatus { marketData ?? .ibkr }
+
+    func position(for conId: Int) -> PositionSnapshot? {
+        positions?.first(where: { $0.conId == conId })
+    }
 
     static let empty = AppSnapshot(
         protocolVersion: 1,

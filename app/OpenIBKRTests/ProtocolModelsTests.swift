@@ -507,6 +507,35 @@ final class ProtocolModelsTests: XCTestCase {
         XCTAssertEqual(snapshot.connection.state, .connected)
         XCTAssertEqual(snapshot.account.accountMasked, "*****TEST")
         XCTAssertEqual(snapshot.pnl.daily?.value, Decimal(string: "12.34"))
+        XCTAssertNil(snapshot.positions)
+    }
+
+    func testDecodesPositionAndCalculatesReturnPercent() throws {
+        let json = #"""
+        {
+          "protocol_version": 1,
+          "sequence": 8,
+          "generated_at": "2026-08-27T02:52:22Z",
+          "connection": {"state":"connected","changed_at":"2026-08-27T02:52:20Z"},
+          "account": {"stale":false},
+          "pnl": {"stale":false},
+          "quotes": [],
+          "positions": [{
+            "con_id": 265598,
+            "quantity": "10",
+            "average_cost": "100",
+            "market_value": "1125",
+            "daily_pnl": "12.5",
+            "unrealized_pnl": "125",
+            "realized_pnl": "0",
+            "received_at": "2026-08-27T02:52:21Z",
+            "stale": false
+          }]
+        }
+        """#
+        let snapshot = try ProtocolCoding.decoder().decode(AppSnapshot.self, from: Data(json.utf8))
+        let position = try XCTUnwrap(snapshot.position(for: 265598))
+        XCTAssertEqual(position.returnPercent, Decimal(string: "12.5"))
     }
 
     func testMarketDataLabelsRemainExplicit() {

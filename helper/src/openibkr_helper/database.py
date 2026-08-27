@@ -204,7 +204,9 @@ class Database:
 
     def save_public_snapshot(self, snapshot: AppSnapshot) -> None:
         connection = self._require_connection()
-        payload = snapshot.model_dump_json()
+        # Position quantities, costs and P&L are sensitive and intentionally
+        # live only for the lifetime of the Helper process.
+        payload = snapshot.model_copy(update={"positions": ()}).model_dump_json()
         with self._lock, connection:
             connection.execute(
                 """

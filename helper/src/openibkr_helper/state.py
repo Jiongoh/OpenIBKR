@@ -14,6 +14,9 @@ from .events import (
     MarketDataStatusEvent,
     MarketDataTypeEvent,
     PnLEvent,
+    PositionEvent,
+    PositionPnLEvent,
+    PositionRemovedEvent,
     QuoteEvent,
     QuoteResetEvent,
     QuoteTrendEvent,
@@ -26,6 +29,7 @@ from .models import (
     Instrument,
     MarketDataStatus,
     PnLSnapshot,
+    PositionSnapshot,
     QuoteSnapshot,
     StreamEnvelope,
     utc_now,
@@ -40,6 +44,7 @@ class SnapshotStore:
         self._account = AccountSnapshot()
         self._pnl = PnLSnapshot()
         self._quotes: dict[int, QuoteSnapshot] = {}
+        self._positions: dict[int, PositionSnapshot] = {}
         self._market_data = MarketDataStatus()
         self._subscribers: set[asyncio.Queue[StreamEnvelope]] = set()
 
@@ -59,6 +64,8 @@ class SnapshotStore:
                 quote.instrument.con_id: quote.model_copy(update={"stale": True})
                 for quote in snapshot.quotes
             }
+            # Position cost and P&L are intentionally memory-only.
+            self._positions = {}
             self._market_data = MarketDataStatus()
 
     async def ensure_instrument(self, instrument: Instrument) -> None:
@@ -71,6 +78,7 @@ class SnapshotStore:
     async def remove_instrument(self, con_id: int) -> None:
         async with self._lock:
             quote = self._quotes.pop(con_id, None)
+            self._positions.pop(con_id, None)
             if quote is not None:
                 await self._publish_unlocked("watchlist_removed", {"con_id": con_id})
 
@@ -92,6 +100,10 @@ class SnapshotStore:
                         con_id: quote.model_copy(update={"stale": True})
                         for con_id, quote in self._quotes.items()
                     }
+                    self._positions = {
+                        con_id: position.model_copy(update={"stale": True})
+                        for con_id, position in self._positions.items()
+                    }
                 kind, data = "connection", self._connection
             elif isinstance(event, AccountEvent):
                 self._account = AccountSnapshot(
@@ -111,6 +123,43 @@ class SnapshotStore:
                     stale=False,
                 )
                 kind, data = "pnl", self._pnl
+            elif isinstance(event, PositionEvent):
+                if event.con_id not in self._quotes:
+                    return
+                existing = self._positions.get(event.con_id)
+                self._positions[event.con_id] = PositionSnapshot(
+                    con_id=event.con_id,
+                    quantity=event.quantity,
+                    average_cost=event.average_cost,
+                    market_value=existing.market_value if existing else None,
+                    daily_pnl=existing.daily_pnl if existing else None,
+                    unrealized_pnl=existing.unrealized_pnl if existing else None,
+                    realized_pnl=existing.realized_pnl if existing else None,
+                    received_at=now,
+                    stale=False,
+                )
+                kind, data = "position", self._positions[event.con_id]
+            elif isinstance(event, PositionPnLEvent):
+                existing = self._positions.get(event.con_id)
+                if existing is None or event.con_id not in self._quotes:
+                    return
+                self._positions[event.con_id] = existing.model_copy(
+                    update={
+                        "quantity": event.quantity,
+                        "market_value": event.market_value,
+                        "daily_pnl": event.daily_pnl,
+                        "unrealized_pnl": event.unrealized_pnl,
+                        "realized_pnl": event.realized_pnl,
+                        "received_at": now,
+                        "stale": False,
+                    }
+                )
+                kind, data = "position_pnl", self._positions[event.con_id]
+            elif isinstance(event, PositionRemovedEvent):
+                removed = self._positions.pop(event.con_id, None)
+                if removed is None:
+                    return
+                kind, data = "position_removed", {"con_id": event.con_id}
             elif isinstance(event, InstrumentResolvedEvent):
                 if event.instrument.con_id not in self._quotes:
                     self._quotes[event.instrument.con_id] = QuoteSnapshot(
@@ -236,6 +285,7 @@ class SnapshotStore:
             account=self._account,
             pnl=self._pnl,
             quotes=tuple(self._quotes[key] for key in sorted(self._quotes)),
+            positions=tuple(self._positions[key] for key in sorted(self._positions)),
             market_data=self._market_data,
         )
 

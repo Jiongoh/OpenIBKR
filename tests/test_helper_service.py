@@ -11,6 +11,7 @@ from openibkr_helper.adapters.fake import FakeIBKRAdapter
 from openibkr_helper.config import HelperSettings
 from openibkr_helper.events import (
     ConnectionEvent,
+    PositionEvent,
     QuoteEvent,
     QuoteResetEvent,
     QuoteTrendEvent,
@@ -81,6 +82,22 @@ class HelperServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(snapshot.pnl.stale)
         self.assertTrue(all(quote.stale for quote in snapshot.quotes))
         self.assertEqual(snapshot.connection.last_error_code, 1100)
+
+    async def test_position_remains_fresh_until_gateway_disconnects(self) -> None:
+        instrument = await self.service.add_watchlist(ContractQuery(symbol="AAPL"))
+        await self.service.handle_adapter_event(
+            PositionEvent(instrument.con_id, Decimal("10"), Decimal("100"))
+        )
+
+        await self.service.store.refresh_staleness(
+            pnl_seconds=1,
+            quote_seconds=1,
+            now=utc_now() + timedelta(minutes=1),
+        )
+        self.assertFalse((await self.service.snapshot()).positions[0].stale)
+
+        await self.service.handle_adapter_event(ConnectionEvent(GatewayState.DISCONNECTED, 1100))
+        self.assertTrue((await self.service.snapshot()).positions[0].stale)
 
     async def test_age_based_staleness(self) -> None:
         await self.service.add_watchlist(ContractQuery(symbol="AAPL"))

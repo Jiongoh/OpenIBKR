@@ -37,6 +37,28 @@ class PnLEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class PositionEvent:
+    con_id: int
+    quantity: Decimal
+    average_cost: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class PositionPnLEvent:
+    con_id: int
+    quantity: Decimal
+    daily_pnl: Decimal | None
+    unrealized_pnl: Decimal | None
+    realized_pnl: Decimal | None
+    market_value: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
+class PositionRemovedEvent:
+    con_id: int
+
+
+@dataclass(frozen=True, slots=True)
 class QuoteEvent:
     con_id: int
     field: Literal["bid", "ask", "last", "close"]
@@ -77,6 +99,9 @@ AdapterEvent = (
     ConnectionEvent
     | AccountEvent
     | PnLEvent
+    | PositionEvent
+    | PositionPnLEvent
+    | PositionRemovedEvent
     | QuoteEvent
     | QuoteTrendEvent
     | QuoteResetEvent

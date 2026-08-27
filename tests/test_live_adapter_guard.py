@@ -9,7 +9,7 @@ from unittest.mock import Mock
 from ibapi.message import OUT
 from openibkr_helper.adapters.live import LiveIBKRAdapter, _HelperIBKRClient
 from openibkr_helper.config import HelperSettings
-from openibkr_helper.events import QuoteEvent
+from openibkr_helper.events import PositionPnLEvent, QuoteEvent
 from openibkr_helper.readonly_client import ReadOnlyIBKRClient, TradingDisabledError
 
 
@@ -108,6 +108,31 @@ class LiveAdapterGuardTests(unittest.TestCase):
             client.tickPrice(17, 68, 98.75, Mock())
             adapter.emit_from_thread.assert_called_once_with(
                 QuoteEvent(270639, "last", Decimal("98.75"))
+            )
+
+    def test_single_position_pnl_is_mapped_without_account_identifier(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = HelperSettings(
+                session_token="position-pnl-test-token-at-least-32-characters",
+                database_path=Path(directory) / "db.sqlite3",
+                adapter="ibkr",
+            )
+            adapter = LiveIBKRAdapter(settings)
+            adapter.emit_from_thread = Mock()
+            client = _HelperIBKRClient(adapter)
+            client.position_pnl_requests[20000] = 265598
+
+            client.pnlSingle(20000, 10, 12.5, 100.25, 2.25, 1250.0)
+
+            adapter.emit_from_thread.assert_called_once_with(
+                PositionPnLEvent(
+                    con_id=265598,
+                    quantity=Decimal("10"),
+                    daily_pnl=Decimal("12.5"),
+                    unrealized_pnl=Decimal("100.25"),
+                    realized_pnl=Decimal("2.25"),
+                    market_value=Decimal("1250.0"),
+                )
             )
 
 

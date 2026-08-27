@@ -112,6 +112,18 @@ class QuoteSnapshot(ProtocolModel):
     trend: tuple[QuoteTrendPoint, ...] = ()
 
 
+class PositionSnapshot(ProtocolModel):
+    con_id: int = Field(gt=0)
+    quantity: Decimal
+    average_cost: Decimal
+    market_value: Decimal | None = None
+    daily_pnl: Decimal | None = None
+    unrealized_pnl: Decimal | None = None
+    realized_pnl: Decimal | None = None
+    received_at: datetime | None = None
+    stale: bool = True
+
+
 class AlpacaCredentials(ProtocolModel):
     key_id: str = Field(min_length=8, max_length=256, repr=False)
     secret_key: str = Field(min_length=16, max_length=512, repr=False)
@@ -140,6 +152,7 @@ class AppSnapshot(ProtocolModel):
     account: AccountSnapshot = Field(default_factory=AccountSnapshot)
     pnl: PnLSnapshot = Field(default_factory=PnLSnapshot)
     quotes: tuple[QuoteSnapshot, ...] = ()
+    positions: tuple[PositionSnapshot, ...] = ()
     market_data: MarketDataStatus = Field(default_factory=MarketDataStatus)
 
 

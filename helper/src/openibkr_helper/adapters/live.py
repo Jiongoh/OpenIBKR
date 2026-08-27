@@ -18,6 +18,9 @@ from ..events import (
     ConnectionEvent,
     MarketDataTypeEvent,
     PnLEvent,
+    PositionEvent,
+    PositionPnLEvent,
+    PositionRemovedEvent,
     QuoteEvent,
     QuoteResetEvent,
 )
@@ -30,6 +33,7 @@ ACCOUNT_SUMMARY_REQUEST_ID = 7201
 PNL_REQUEST_ID = 7202
 CONTRACT_REQUEST_ID_START = 8000
 MARKET_REQUEST_ID_START = 10000
+POSITION_PNL_REQUEST_ID_START = 20000
 
 
 def _decimal(value: Any) -> Decimal | None:
@@ -63,6 +67,8 @@ class _HelperIBKRClient(ReadOnlyIBKRClient):
         self.selected_account: str | None = None
         self.contract_results: dict[int, list[Instrument]] = {}
         self.market_requests: dict[int, int] = {}
+        self.position_cache: dict[int, tuple[Decimal, Decimal]] = {}
+        self.position_pnl_requests: dict[int, int] = {}
 
     def _emit(self, event: Any) -> None:
         self._adapter.emit_from_thread(event)
@@ -94,6 +100,43 @@ class _HelperIBKRClient(ReadOnlyIBKRClient):
         daily, unrealized, realized = values
         assert daily is not None and unrealized is not None and realized is not None
         self._emit(PnLEvent(daily, unrealized, realized))
+
+    def position(self, account: str, contract: Contract, position: Any, avgCost: float) -> None:  # noqa: N802
+        super().position(account, contract, position, avgCost)
+        con_id = int(contract.conId)
+        quantity = _decimal(position)
+        average_cost = _decimal(avgCost)
+        if con_id <= 0 or quantity is None or average_cost is None:
+            return
+        if quantity == 0:
+            self.position_cache.pop(con_id, None)
+        else:
+            self.position_cache[con_id] = (quantity, average_cost)
+        self._adapter.position_from_thread(con_id, quantity, average_cost)
+
+    def pnlSingle(
+        self,
+        reqId: int,
+        pos: Any,
+        dailyPnL: float,
+        unrealizedPnL: float,
+        realizedPnL: float,
+        value: float,
+    ) -> None:  # noqa: N802
+        con_id = self.position_pnl_requests.get(reqId)
+        quantity = _decimal(pos)
+        if con_id is None or quantity is None:
+            return
+        self._emit(
+            PositionPnLEvent(
+                con_id=con_id,
+                quantity=quantity,
+                daily_pnl=_decimal(dailyPnL),
+                unrealized_pnl=_decimal(unrealizedPnL),
+                realized_pnl=_decimal(realizedPnL),
+                market_value=_decimal(value),
+            )
+        )
 
     def contractDetails(self, reqId: int, contractDetails: ContractDetails) -> None:  # noqa: N802
         super().contractDetails(reqId, contractDetails)
@@ -188,8 +231,10 @@ class LiveIBKRAdapter:
         self._contract_futures: dict[int, asyncio.Future[tuple[Instrument, ...]]] = {}
         self._next_contract_request = CONTRACT_REQUEST_ID_START
         self._next_market_request = MARKET_REQUEST_ID_START
+        self._next_position_pnl_request = POSITION_PNL_REQUEST_ID_START
         self._instruments: dict[int, Instrument] = {}
         self._market_request_by_con_id: dict[int, int] = {}
+        self._position_pnl_request_by_con_id: dict[int, int] = {}
 
     async def start(self, sink: EventSink) -> None:
         if self._sink is not None:
@@ -271,15 +316,70 @@ class LiveIBKRAdapter:
         client.market_requests[request_id] = instrument.con_id
         self._market_request_by_con_id[instrument.con_id] = request_id
         client.reqMktData(request_id, contract, "", False, False, [])
+        await self._sync_position_subscription(instrument.con_id)
 
     async def unsubscribe_quote(self, con_id: int) -> None:
         self._instruments.pop(con_id, None)
+        await self._cancel_position_subscription(con_id)
         request_id = self._market_request_by_con_id.pop(con_id, None)
         client = self._client
         if request_id is None or client is None or not client.isConnected():
             return
         client.cancelMktData(request_id)
         client.market_requests.pop(request_id, None)
+
+    def position_from_thread(
+        self, con_id: int, quantity: Decimal, average_cost: Decimal
+    ) -> None:
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        loop.call_soon_threadsafe(
+            lambda: asyncio.create_task(
+                self._handle_position_update(con_id, quantity, average_cost)
+            )
+        )
+
+    async def _handle_position_update(
+        self, con_id: int, quantity: Decimal, average_cost: Decimal
+    ) -> None:
+        if con_id not in self._instruments:
+            return
+        if quantity == 0:
+            await self._cancel_position_subscription(con_id)
+            if self._sink is not None:
+                await self._sink(PositionRemovedEvent(con_id))
+            return
+        if self._sink is not None:
+            await self._sink(PositionEvent(con_id, quantity, average_cost))
+        await self._sync_position_subscription(con_id)
+
+    async def _sync_position_subscription(self, con_id: int) -> None:
+        client = self._client
+        if client is None or not client.isConnected() or client.selected_account is None:
+            return
+        cached = client.position_cache.get(con_id)
+        if cached is None:
+            return
+        quantity, average_cost = cached
+        if self._sink is not None:
+            await self._sink(PositionEvent(con_id, quantity, average_cost))
+        if con_id in self._position_pnl_request_by_con_id:
+            return
+        request_id = self._next_position_pnl_request
+        self._next_position_pnl_request += 1
+        self._position_pnl_request_by_con_id[con_id] = request_id
+        client.position_pnl_requests[request_id] = con_id
+        client.reqPnLSingle(request_id, client.selected_account, "", con_id)
+
+    async def _cancel_position_subscription(self, con_id: int) -> None:
+        request_id = self._position_pnl_request_by_con_id.pop(con_id, None)
+        client = self._client
+        if request_id is None or client is None:
+            return
+        if client.isConnected():
+            client.cancelPnLSingle(request_id)
+        client.position_pnl_requests.pop(request_id, None)
 
     def emit_from_thread(self, event: Any) -> None:
         loop, sink = self._loop, self._sink
@@ -361,10 +461,12 @@ class LiveIBKRAdapter:
         self._reader_thread = reader_thread
         client.reqAccountSummary(ACCOUNT_SUMMARY_REQUEST_ID, "All", "Currency,NetLiquidation")
         client.reqPnL(PNL_REQUEST_ID, client.selected_account, "")
+        client.reqPositions()
         client.reqMarketDataType(3)
         logger.info("gateway_connected server_version=%s", client.serverVersion())
         old_instruments = tuple(self._instruments.values())
         self._market_request_by_con_id.clear()
+        self._position_pnl_request_by_con_id.clear()
         for instrument in old_instruments:
             await self.subscribe_quote(instrument)
 
@@ -375,9 +477,11 @@ class LiveIBKRAdapter:
         logger.info("gateway_resubscribe_after_1101")
         client.reqAccountSummary(ACCOUNT_SUMMARY_REQUEST_ID, "All", "Currency,NetLiquidation")
         client.reqPnL(PNL_REQUEST_ID, client.selected_account, "")
+        client.reqPositions()
         client.reqMarketDataType(3)
         client.market_requests.clear()
         self._market_request_by_con_id.clear()
+        self._position_pnl_request_by_con_id.clear()
         for instrument in tuple(self._instruments.values()):
             await self.subscribe_quote(instrument)
         if self._sink is not None:
@@ -411,10 +515,14 @@ class LiveIBKRAdapter:
         if client is not None and client.isConnected():
             for request_id in tuple(self._market_request_by_con_id.values()):
                 client.cancelMktData(request_id)
+            for request_id in tuple(self._position_pnl_request_by_con_id.values()):
+                client.cancelPnLSingle(request_id)
+            client.cancelPositions()
             client.cancelPnL(PNL_REQUEST_ID)
             client.cancelAccountSummary(ACCOUNT_SUMMARY_REQUEST_ID)
             client.disconnect()
         self._market_request_by_con_id.clear()
+        self._position_pnl_request_by_con_id.clear()
         if reader_thread is not None:
             await asyncio.to_thread(reader_thread.join, 2.0)
 

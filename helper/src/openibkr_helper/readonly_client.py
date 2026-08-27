@@ -38,6 +38,8 @@ ALLOWED_OUTGOING: Final[frozenset[OUT]] = frozenset(
         OUT.CANCEL_POSITIONS,
         OUT.REQ_PNL,
         OUT.CANCEL_PNL,
+        OUT.REQ_PNL_SINGLE,
+        OUT.CANCEL_PNL_SINGLE,
         OUT.REQ_CONTRACT_DATA,
         OUT.CANCEL_CONTRACT_DATA,
         OUT.REQ_MARKET_DATA_TYPE,
