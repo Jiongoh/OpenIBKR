@@ -505,16 +505,20 @@ private struct DynamicIslandView: View {
         .animation(.easeInOut(duration: 0.18), value: selectedQuoteID)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(isExpanded ? "OpenIBKR Dynamic Island" : "Expand OpenIBKR controls")
-        .popover(
-            isPresented: positionPopoverPresentedBinding,
-            attachmentAnchor: .point(.bottom),
-            arrowEdge: .top
-        ) {
-            if let quote = positionPopoverQuote {
-                positionPopover(for: quote)
-                    .padding(.top, 10)
-                    .presentationBackground(.clear)
-            }
+        .overlay {
+            PositionPopupHost(
+                isPresented: positionPopoverQuote != nil,
+                content: AnyView(
+                    Group {
+                        if let quote = positionPopoverQuote {
+                            positionPopover(for: quote)
+                        }
+                    }
+                ),
+                onDismiss: dismissPositionPopover
+            )
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
         }
     }
 
@@ -963,18 +967,12 @@ private struct DynamicIslandView: View {
         return model.snapshot.quotes.first(where: { $0.id == positionPopoverQuoteID })
     }
 
-    private var positionPopoverPresentedBinding: Binding<Bool> {
-        Binding(
-            get: { positionPopoverQuoteID != nil },
-            set: { presented in
-                if !presented {
-                    positionPopoverQuoteID = nil
-                    if !isPointerInside {
-                        setHovering(false)
-                    }
-                }
-            }
-        )
+    private func dismissPositionPopover() {
+        guard positionPopoverQuoteID != nil else { return }
+        positionPopoverQuoteID = nil
+        if !isPointerInside {
+            setHovering(false)
+        }
     }
 
     @ViewBuilder
@@ -1454,6 +1452,200 @@ private struct PositionPriceChart: View {
             }
         }
     }
+}
+
+private struct PositionPopupHost: NSViewRepresentable {
+    let isPresented: Bool
+    let content: AnyView
+    let onDismiss: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        NSView(frame: .zero)
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.update(
+            anchorView: nsView,
+            isPresented: isPresented,
+            content: content,
+            onDismiss: onDismiss
+        )
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.hide()
+    }
+
+    @MainActor
+    final class Coordinator {
+        private static let gap: CGFloat = 10
+        private let hostingView = NSHostingView(rootView: AnyView(EmptyView()))
+        private var panel: PositionDetailPanel?
+        private weak var parentWindow: NSWindow?
+        private var localMouseMonitor: Any?
+        private var globalMouseMonitor: Any?
+        private var keyMonitor: Any?
+        private var onDismiss: (() -> Void)?
+        private var pendingPresentation = false
+
+        func update(
+            anchorView: NSView,
+            isPresented: Bool,
+            content: AnyView,
+            onDismiss: @escaping () -> Void
+        ) {
+            self.onDismiss = onDismiss
+            guard isPresented else {
+                pendingPresentation = false
+                hide()
+                return
+            }
+
+            hostingView.rootView = content
+            guard let parentWindow = anchorView.window else {
+                guard !pendingPresentation else { return }
+                pendingPresentation = true
+                DispatchQueue.main.async { [weak self, weak anchorView] in
+                    guard let self, let anchorView else { return }
+                    self.pendingPresentation = false
+                    self.update(
+                        anchorView: anchorView,
+                        isPresented: true,
+                        content: content,
+                        onDismiss: onDismiss
+                    )
+                }
+                return
+            }
+            pendingPresentation = false
+            show(below: parentWindow)
+        }
+
+        func hide() {
+            stopMonitoring()
+            if let panel, let parentWindow {
+                parentWindow.removeChildWindow(panel)
+            }
+            panel?.orderOut(nil)
+            parentWindow = nil
+        }
+
+        private func show(below parentWindow: NSWindow) {
+            let panel = panel ?? makePanel()
+            hostingView.layoutSubtreeIfNeeded()
+            var contentSize = hostingView.fittingSize
+            if contentSize.width < 1 || contentSize.height < 1 {
+                contentSize = NSSize(width: 348, height: 340)
+            }
+            hostingView.frame = NSRect(origin: .zero, size: contentSize)
+            panel.setContentSize(contentSize)
+
+            if self.parentWindow !== parentWindow {
+                if let previousParent = self.parentWindow {
+                    previousParent.removeChildWindow(panel)
+                }
+                parentWindow.addChildWindow(panel, ordered: .above)
+                self.parentWindow = parentWindow
+            }
+
+            let screenFrame = parentWindow.screen?.frame ?? parentWindow.frame
+            let preferredX = parentWindow.frame.midX - contentSize.width / 2
+            let x = min(
+                max(screenFrame.minX, preferredX),
+                screenFrame.maxX - contentSize.width
+            )
+            let frame = NSRect(
+                x: x,
+                y: parentWindow.frame.minY - Self.gap - contentSize.height,
+                width: contentSize.width,
+                height: contentSize.height
+            )
+            panel.setFrame(frame, display: true, animate: false)
+            panel.orderFront(nil)
+            startMonitoring(panel: panel, parentWindow: parentWindow)
+        }
+
+        private func makePanel() -> PositionDetailPanel {
+            let panel = PositionDetailPanel(
+                contentRect: .zero,
+                styleMask: [.borderless, .nonactivatingPanel],
+                backing: .buffered,
+                defer: false
+            )
+            panel.backgroundColor = .clear
+            panel.isOpaque = false
+            panel.hasShadow = false
+            panel.hidesOnDeactivate = false
+            panel.isFloatingPanel = true
+            panel.isMovable = false
+            panel.isMovableByWindowBackground = false
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            panel.contentView = hostingView
+            self.panel = panel
+            return panel
+        }
+
+        private func startMonitoring(panel: NSPanel, parentWindow: NSWindow) {
+            guard localMouseMonitor == nil else { return }
+            localMouseMonitor = NSEvent.addLocalMonitorForEvents(
+                matching: [.leftMouseDown, .rightMouseDown]
+            ) { [weak self, weak panel, weak parentWindow] event in
+                if event.window !== panel, event.window !== parentWindow {
+                    self?.requestDismiss()
+                }
+                return event
+            }
+            globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(
+                matching: [.leftMouseDown, .rightMouseDown]
+            ) { [weak self] _ in
+                self?.requestDismiss()
+            }
+            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
+                [weak self] event in
+                if event.keyCode == 53 {
+                    self?.requestDismiss()
+                    return nil
+                }
+                return event
+            }
+        }
+
+        private func requestDismiss() {
+            Task { @MainActor [weak self] in
+                self?.onDismiss?()
+            }
+        }
+
+        private func stopMonitoring() {
+            if let localMouseMonitor {
+                NSEvent.removeMonitor(localMouseMonitor)
+                self.localMouseMonitor = nil
+            }
+            if let globalMouseMonitor {
+                NSEvent.removeMonitor(globalMouseMonitor)
+                self.globalMouseMonitor = nil
+            }
+            if let keyMonitor {
+                NSEvent.removeMonitor(keyMonitor)
+                self.keyMonitor = nil
+            }
+        }
+
+        deinit {
+            MainActor.assumeIsolated {
+                stopMonitoring()
+            }
+        }
+    }
+}
+
+private final class PositionDetailPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
 }
 
 private struct OutsideClickMonitor: NSViewRepresentable {
