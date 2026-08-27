@@ -7,13 +7,55 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from ibapi.message import OUT
-from openibkr_helper.adapters.live import LiveIBKRAdapter, _HelperIBKRClient
+from openibkr_helper.adapters.live import (
+    LiveIBKRAdapter,
+    _ExecutionFill,
+    _HelperIBKRClient,
+    _rebuild_cost_slots,
+)
 from openibkr_helper.config import HelperSettings
 from openibkr_helper.events import PositionPnLEvent, QuoteEvent
 from openibkr_helper.readonly_client import ReadOnlyIBKRClient, TradingDisabledError
 
 
 class LiveAdapterGuardTests(unittest.TestCase):
+    def test_cost_slots_fall_back_to_one_honest_historical_base(self) -> None:
+        slots = _rebuild_cost_slots(265598, Decimal("10"), Decimal("101.25"), ())
+
+        self.assertEqual(len(slots), 1)
+        self.assertEqual(slots[0].source, "historical_base")
+        self.assertEqual(slots[0].quantity, Decimal("10"))
+        self.assertEqual(slots[0].price, Decimal("101.25"))
+
+    def test_cost_slots_keep_surviving_today_execution_groups(self) -> None:
+        fills = (
+            _ExecutionFill("a", 265598, "BOT", Decimal("10"), Decimal("100"), "1", "7"),
+            _ExecutionFill("b", 265598, "SLD", Decimal("5"), Decimal("110"), "2", "8"),
+        )
+
+        slots = _rebuild_cost_slots(
+            265598, Decimal("5"), Decimal("100"), fills
+        )
+
+        self.assertEqual(len(slots), 1)
+        self.assertEqual(slots[0].source, "execution")
+        self.assertEqual(slots[0].quantity, Decimal("5"))
+        self.assertEqual(slots[0].price, Decimal("100"))
+
+    def test_cost_slots_derive_pre_today_base_without_faking_execution_prices(self) -> None:
+        fills = (
+            _ExecutionFill("a", 265598, "BOT", Decimal("2"), Decimal("120"), "1", "9"),
+        )
+
+        slots = _rebuild_cost_slots(
+            265598, Decimal("12"), Decimal("105"), fills
+        )
+
+        self.assertEqual([slot.source for slot in slots], ["historical_base", "execution"])
+        self.assertEqual(slots[0].quantity, Decimal("10"))
+        self.assertEqual(slots[0].price, Decimal("102"))
+        self.assertEqual(slots[1].price, Decimal("120"))
+
     def test_live_client_inherits_fail_closed_wire_guard(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             settings = HelperSettings(

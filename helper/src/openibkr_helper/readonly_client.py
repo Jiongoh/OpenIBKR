@@ -1,7 +1,7 @@
 """Fail-closed IBKR client used by the local helper.
 
 This module is not a trading client. It permits only the outgoing TWS message
-types needed to read account/P&L/position and top-of-book market data. Every
+types needed to read account/P&L/position, executions, and top-of-book market data. Every
 other outgoing message ID is rejected before it reaches the socket.
 """
 
@@ -40,6 +40,7 @@ ALLOWED_OUTGOING: Final[frozenset[OUT]] = frozenset(
         OUT.CANCEL_PNL,
         OUT.REQ_PNL_SINGLE,
         OUT.CANCEL_PNL_SINGLE,
+        OUT.REQ_EXECUTIONS,
         OUT.REQ_CONTRACT_DATA,
         OUT.CANCEL_CONTRACT_DATA,
         OUT.REQ_MARKET_DATA_TYPE,
@@ -62,7 +63,6 @@ FORBIDDEN_TRADING_OUTGOING: Final[frozenset[OUT]] = frozenset(
         OUT.REQ_ALL_OPEN_ORDERS,
         OUT.REQ_AUTO_OPEN_ORDERS,
         OUT.REQ_COMPLETED_ORDERS,
-        OUT.REQ_EXECUTIONS,
     }
 )
 
@@ -241,9 +241,6 @@ class ReadOnlyIBKRClient(EWrapper, EClient):
 
     def reqCompletedOrders(self, *_args: Any, **_kwargs: Any) -> None:  # noqa: N802
         self._deny("reqCompletedOrders")
-
-    def reqExecutions(self, *_args: Any, **_kwargs: Any) -> None:  # noqa: N802
-        self._deny("reqExecutions")
 
     # IB callbacks below collect validation metadata only.  Financial values,
     # account IDs, symbols and raw error messages are never emitted or persisted.

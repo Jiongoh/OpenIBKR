@@ -998,13 +998,10 @@ private struct DynamicIslandView: View {
 
             PositionPriceChart(
                 points: model.quoteTrends[quote.id] ?? [],
-                currentPrice: quote.displayPrice?.value,
                 averageCost: position?.averageCost.value,
                 previousClose: quote.validClose?.value,
-                currentPriceText: money(
-                    quote.displayPrice,
-                    currency: quote.instrument.currency
-                ),
+                costSlots: position?.resolvedCostSlots ?? [],
+                currency: quote.instrument.currency,
                 averageCostText: money(
                     position?.averageCost,
                     currency: quote.instrument.currency
@@ -1316,16 +1313,27 @@ private struct PositionPriceChart: View {
     }
 
     let points: [QuoteTrendPoint]
-    let currentPrice: Decimal?
     let averageCost: Decimal?
     let previousClose: Decimal?
-    let currentPriceText: String
+    let costSlots: [PositionCostSlot]
+    let currency: String
     let averageCostText: String
     let previousCloseText: String
     let trendColor: Color
 
     private var trendValues: [Double] {
         points.map { NSDecimalNumber(decimal: $0.price.value).doubleValue }
+    }
+
+    private func slotPriceText(_ price: DecimalString) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        let currencyCode = currency.isEmpty ? "USD" : currency
+        formatter.currencyCode = currencyCode
+        if currencyCode == "USD" { formatter.currencySymbol = "$" }
+        formatter.minimumFractionDigits = 2
+        formatter.maximumFractionDigits = 4
+        return formatter.string(from: NSDecimalNumber(decimal: price.value)) ?? "—"
     }
 
     private var references: [Reference] {
@@ -1354,15 +1362,17 @@ private struct PositionPriceChart: View {
                 )
             )
         }
-        if let currentPrice {
+        for (index, slot) in costSlots.enumerated() {
             result.append(
                 Reference(
-                    id: "spot",
-                    title: "SPOT",
-                    value: NSDecimalNumber(decimal: currentPrice).doubleValue,
-                    text: currentPriceText,
-                    color: Color(red: 0.48, green: 0.74, blue: 1.0),
-                    dash: []
+                    id: "slot:\(slot.id)",
+                    title: slot.isHistoricalBase ? "SLOT BASE" : "SLOT \(index + 1)",
+                    value: NSDecimalNumber(decimal: slot.price.value).doubleValue,
+                    text: slotPriceText(slot.price),
+                    color: slot.isHistoricalBase
+                        ? Color(red: 0.54, green: 0.72, blue: 0.98)
+                        : Color(red: 0.49, green: 0.84, blue: 1.0),
+                    dash: slot.isHistoricalBase ? [3, 3] : []
                 )
             )
         }
@@ -1371,17 +1381,19 @@ private struct PositionPriceChart: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 12) {
-                ForEach(references) { reference in
-                    HStack(spacing: 5) {
-                        Capsule()
-                            .fill(reference.color)
-                            .frame(width: 10, height: reference.id == "spot" ? 2 : 1)
-                        Text("\(reference.title) \(reference.text)")
-                            .font(.system(size: 9, weight: .medium, design: .rounded))
-                            .monospacedDigit()
-                            .foregroundStyle(Color.white.opacity(0.52))
-                            .lineLimit(1)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(references) { reference in
+                        HStack(spacing: 5) {
+                            Capsule()
+                                .fill(reference.color)
+                                .frame(width: 10, height: reference.id.hasPrefix("slot:") ? 2 : 1)
+                            Text("\(reference.title) \(reference.text)")
+                                .font(.system(size: 9, weight: .medium, design: .rounded))
+                                .monospacedDigit()
+                                .foregroundStyle(Color.white.opacity(0.52))
+                                .lineLimit(1)
+                        }
                     }
                 }
             }
@@ -1417,9 +1429,9 @@ private struct PositionPriceChart: View {
                             path.addLine(to: CGPoint(x: proxy.size.width, y: y))
                         }
                         .stroke(
-                            reference.color.opacity(reference.id == "spot" ? 0.76 : 0.58),
+                            reference.color.opacity(reference.id.hasPrefix("slot:") ? 0.78 : 0.58),
                             style: StrokeStyle(
-                                lineWidth: reference.id == "spot" ? 1.15 : 1,
+                                lineWidth: reference.id.hasPrefix("slot:") ? 1.15 : 1,
                                 lineCap: .round,
                                 dash: reference.dash
                             )

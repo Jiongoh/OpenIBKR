@@ -112,6 +112,13 @@ class QuoteSnapshot(ProtocolModel):
     trend: tuple[QuoteTrendPoint, ...] = ()
 
 
+class PositionCostSlot(ProtocolModel):
+    id: str = Field(min_length=1, max_length=96)
+    quantity: Decimal = Field(gt=0)
+    price: Decimal = Field(gt=0)
+    source: Literal["historical_base", "execution"]
+
+
 class PositionSnapshot(ProtocolModel):
     con_id: int = Field(gt=0)
     quantity: Decimal
@@ -120,6 +127,7 @@ class PositionSnapshot(ProtocolModel):
     daily_pnl: Decimal | None = None
     unrealized_pnl: Decimal | None = None
     realized_pnl: Decimal | None = None
+    cost_slots: tuple[PositionCostSlot, ...] = ()
     received_at: datetime | None = None
     stale: bool = True
 

@@ -12,6 +12,7 @@ from .models import (
     Instrument,
     MarketDataKind,
     MarketDataStatus,
+    PositionCostSlot,
     QuoteTrendPoint,
 )
 
@@ -51,6 +52,12 @@ class PositionPnLEvent:
     unrealized_pnl: Decimal | None
     realized_pnl: Decimal | None
     market_value: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
+class PositionCostSlotsEvent:
+    con_id: int
+    slots: tuple[PositionCostSlot, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +108,7 @@ AdapterEvent = (
     | PnLEvent
     | PositionEvent
     | PositionPnLEvent
+    | PositionCostSlotsEvent
     | PositionRemovedEvent
     | QuoteEvent
     | QuoteTrendEvent

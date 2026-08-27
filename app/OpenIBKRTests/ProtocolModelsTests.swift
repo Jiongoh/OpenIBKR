@@ -528,6 +528,17 @@ final class ProtocolModelsTests: XCTestCase {
             "daily_pnl": "12.5",
             "unrealized_pnl": "125",
             "realized_pnl": "0",
+            "cost_slots": [{
+              "id": "265598:base",
+              "quantity": "7",
+              "price": "95",
+              "source": "historical_base"
+            }, {
+              "id": "265598:exec:42",
+              "quantity": "3",
+              "price": "111.6667",
+              "source": "execution"
+            }],
             "received_at": "2026-08-27T02:52:21Z",
             "stale": false
           }]
@@ -536,6 +547,9 @@ final class ProtocolModelsTests: XCTestCase {
         let snapshot = try ProtocolCoding.decoder().decode(AppSnapshot.self, from: Data(json.utf8))
         let position = try XCTUnwrap(snapshot.position(for: 265598))
         XCTAssertEqual(position.returnPercent, Decimal(string: "12.5"))
+        XCTAssertEqual(position.resolvedCostSlots.count, 2)
+        XCTAssertTrue(position.resolvedCostSlots[0].isHistoricalBase)
+        XCTAssertEqual(position.resolvedCostSlots[1].price.value, Decimal(string: "111.6667"))
     }
 
     func testMarketDataLabelsRemainExplicit() {

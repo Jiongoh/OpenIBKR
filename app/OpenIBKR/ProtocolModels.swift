@@ -137,6 +137,15 @@ struct QuoteSnapshot: Codable, Identifiable {
     }
 }
 
+struct PositionCostSlot: Codable, Identifiable, Equatable {
+    var id: String
+    var quantity: DecimalString
+    var price: DecimalString
+    var source: String
+
+    var isHistoricalBase: Bool { source == "historical_base" }
+}
+
 struct PositionSnapshot: Codable, Identifiable {
     var conId: Int
     var quantity: DecimalString
@@ -145,10 +154,13 @@ struct PositionSnapshot: Codable, Identifiable {
     var dailyPnl: DecimalString?
     var unrealizedPnl: DecimalString?
     var realizedPnl: DecimalString?
+    var costSlots: [PositionCostSlot]? = nil
     var receivedAt: Date?
     var stale: Bool
 
     var id: Int { conId }
+
+    var resolvedCostSlots: [PositionCostSlot] { costSlots ?? [] }
 
     var returnPercent: Decimal? {
         let basis = quantity.value * averageCost.value

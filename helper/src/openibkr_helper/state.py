@@ -14,6 +14,7 @@ from .events import (
     MarketDataStatusEvent,
     MarketDataTypeEvent,
     PnLEvent,
+    PositionCostSlotsEvent,
     PositionEvent,
     PositionPnLEvent,
     PositionRemovedEvent,
@@ -135,6 +136,7 @@ class SnapshotStore:
                     daily_pnl=existing.daily_pnl if existing else None,
                     unrealized_pnl=existing.unrealized_pnl if existing else None,
                     realized_pnl=existing.realized_pnl if existing else None,
+                    cost_slots=existing.cost_slots if existing else (),
                     received_at=now,
                     stale=False,
                 )
@@ -155,6 +157,14 @@ class SnapshotStore:
                     }
                 )
                 kind, data = "position_pnl", self._positions[event.con_id]
+            elif isinstance(event, PositionCostSlotsEvent):
+                existing = self._positions.get(event.con_id)
+                if existing is None or event.con_id not in self._quotes:
+                    return
+                self._positions[event.con_id] = existing.model_copy(
+                    update={"cost_slots": event.slots, "received_at": now}
+                )
+                kind, data = "position_cost_slots", self._positions[event.con_id]
             elif isinstance(event, PositionRemovedEvent):
                 removed = self._positions.pop(event.con_id, None)
                 if removed is None:

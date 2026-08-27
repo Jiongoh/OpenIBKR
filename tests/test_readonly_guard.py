@@ -25,6 +25,9 @@ class ReadOnlyGuardTests(unittest.TestCase):
         self.assertIn(OUT.REQ_PNL_SINGLE, ALLOWED_OUTGOING)
         self.assertIn(OUT.CANCEL_PNL_SINGLE, ALLOWED_OUTGOING)
 
+    def test_execution_history_read_is_explicitly_allowlisted(self) -> None:
+        self.assertIn(OUT.REQ_EXECUTIONS, ALLOWED_OUTGOING)
+
     def test_every_known_non_allowlisted_message_fails_closed(self) -> None:
         for outgoing in OUT:
             if outgoing in ALLOWED_OUTGOING:
@@ -69,7 +72,6 @@ class ReadOnlyGuardTests(unittest.TestCase):
             "reqAllOpenOrders",
             "reqAutoOpenOrders",
             "reqCompletedOrders",
-            "reqExecutions",
         )
         for method_name in entry_points:
             with self.subTest(method=method_name):

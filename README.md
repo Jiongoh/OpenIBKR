@@ -42,8 +42,9 @@ IB Gateway through the official TWS API.
 OpenIBKR does **not** implement trading.
 
 - The official IBKR wire client uses a fail-closed outgoing-message allowlist.
-- Order placement, cancellation, global cancellation, option exercise, order
-  queries and execution queries are blocked at both method and wire layers.
+- Order placement, cancellation, global cancellation, option exercise and order
+  queries are blocked at both method and wire layers. The sole execution-history
+  request is read-only and is used only to reconstruct today's surviving cost slots.
 - OpenIBKR and the Helper connect only through literal `127.0.0.1` endpoints.
 - The Helper API uses a random local port and a one-time token that remains only
   in process memory.
