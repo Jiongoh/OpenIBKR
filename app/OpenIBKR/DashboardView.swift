@@ -505,6 +505,17 @@ private struct DynamicIslandView: View {
         .animation(.easeInOut(duration: 0.18), value: selectedQuoteID)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(isExpanded ? "OpenIBKR Dynamic Island" : "Expand OpenIBKR controls")
+        .popover(
+            isPresented: positionPopoverPresentedBinding,
+            attachmentAnchor: .point(.bottom),
+            arrowEdge: .top
+        ) {
+            if let quote = positionPopoverQuote {
+                positionPopover(for: quote)
+                    .padding(.top, 10)
+                    .presentationBackground(.clear)
+            }
+        }
     }
 
     private var expandedIsland: some View {
@@ -701,14 +712,6 @@ private struct DynamicIslandView: View {
         .contentShape(Rectangle())
         .onTapGesture {
             showPositionPopover(for: quote.id)
-        }
-        .popover(
-            isPresented: positionPopoverBinding(for: quote.id),
-            attachmentAnchor: .rect(.bounds),
-            arrowEdge: .top
-        ) {
-            positionPopover(for: quote)
-                .presentationBackground(Color(red: 0.055, green: 0.055, blue: 0.062))
         }
         .transition(
             .asymmetric(
@@ -955,13 +958,16 @@ private struct DynamicIslandView: View {
         }
     }
 
-    private func positionPopoverBinding(for quoteID: Int) -> Binding<Bool> {
+    private var positionPopoverQuote: QuoteSnapshot? {
+        guard let positionPopoverQuoteID else { return nil }
+        return model.snapshot.quotes.first(where: { $0.id == positionPopoverQuoteID })
+    }
+
+    private var positionPopoverPresentedBinding: Binding<Bool> {
         Binding(
-            get: { positionPopoverQuoteID == quoteID },
+            get: { positionPopoverQuoteID != nil },
             set: { presented in
-                if presented {
-                    positionPopoverQuoteID = quoteID
-                } else if positionPopoverQuoteID == quoteID {
+                if !presented {
                     positionPopoverQuoteID = nil
                     if !isPointerInside {
                         setHovering(false)
@@ -992,6 +998,28 @@ private struct DynamicIslandView: View {
                     .foregroundStyle(Color.white.opacity(0.42))
             }
 
+            PositionPriceChart(
+                points: model.quoteTrends[quote.id] ?? [],
+                currentPrice: quote.displayPrice?.value,
+                averageCost: position?.averageCost.value,
+                previousClose: quote.validClose?.value,
+                currentPriceText: money(
+                    quote.displayPrice,
+                    currency: quote.instrument.currency
+                ),
+                averageCostText: money(
+                    position?.averageCost,
+                    currency: quote.instrument.currency
+                ),
+                previousCloseText: money(
+                    quote.validClose,
+                    currency: quote.instrument.currency
+                ),
+                trendColor: quoteDailyChangeColor(quote)
+            )
+            .frame(height: 142)
+            .padding(.top, 16)
+
             if let position {
                 HStack(spacing: 18) {
                     positionMetric(
@@ -1004,7 +1032,7 @@ private struct DynamicIslandView: View {
                         alignment: .trailing
                     )
                 }
-                .padding(.top, 18)
+                .padding(.top, 16)
 
                 Rectangle()
                     .fill(Color.white.opacity(0.09))
@@ -1065,8 +1093,11 @@ private struct DynamicIslandView: View {
             .padding(.top, position == nil ? 0 : 16)
         }
         .padding(18)
-        .frame(width: 288)
-        .background(Color(red: 0.055, green: 0.055, blue: 0.062))
+        .frame(width: 348)
+        .background(
+            Color(red: 0.055, green: 0.055, blue: 0.062),
+            in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+        )
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Position details for \(quote.instrument.symbol)")
     }
@@ -1273,6 +1304,155 @@ private struct QuoteSparkline: View {
             )
         }
         .padding(.vertical, 2)
+    }
+}
+
+private struct PositionPriceChart: View {
+    struct Reference: Identifiable {
+        let id: String
+        let title: String
+        let value: Double
+        let text: String
+        let color: Color
+        let dash: [CGFloat]
+    }
+
+    let points: [QuoteTrendPoint]
+    let currentPrice: Decimal?
+    let averageCost: Decimal?
+    let previousClose: Decimal?
+    let currentPriceText: String
+    let averageCostText: String
+    let previousCloseText: String
+    let trendColor: Color
+
+    private var trendValues: [Double] {
+        points.map { NSDecimalNumber(decimal: $0.price.value).doubleValue }
+    }
+
+    private var references: [Reference] {
+        var result: [Reference] = []
+        if let previousClose {
+            result.append(
+                Reference(
+                    id: "previous",
+                    title: "CLOSE",
+                    value: NSDecimalNumber(decimal: previousClose).doubleValue,
+                    text: previousCloseText,
+                    color: Color.white.opacity(0.38),
+                    dash: [2, 4]
+                )
+            )
+        }
+        if let averageCost {
+            result.append(
+                Reference(
+                    id: "average",
+                    title: "AVG",
+                    value: NSDecimalNumber(decimal: averageCost).doubleValue,
+                    text: averageCostText,
+                    color: Color.orange.opacity(0.82),
+                    dash: [6, 4]
+                )
+            )
+        }
+        if let currentPrice {
+            result.append(
+                Reference(
+                    id: "spot",
+                    title: "SPOT",
+                    value: NSDecimalNumber(decimal: currentPrice).doubleValue,
+                    text: currentPriceText,
+                    color: Color(red: 0.48, green: 0.74, blue: 1.0),
+                    dash: []
+                )
+            )
+        }
+        return result
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                ForEach(references) { reference in
+                    HStack(spacing: 5) {
+                        Capsule()
+                            .fill(reference.color)
+                            .frame(width: 10, height: reference.id == "spot" ? 2 : 1)
+                        Text("\(reference.title) \(reference.text)")
+                            .font(.system(size: 9, weight: .medium, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(Color.white.opacity(0.52))
+                            .lineLimit(1)
+                    }
+                }
+            }
+
+            GeometryReader { proxy in
+                let allValues = trendValues + references.map(\.value)
+                let rawMinimum = allValues.min() ?? 0
+                let rawMaximum = allValues.max() ?? 1
+                let rawRange = rawMaximum - rawMinimum
+                let padding = max(abs(rawMaximum) * 0.006, rawRange * 0.10, 0.01)
+                let minimum = rawMinimum - padding
+                let maximum = rawMaximum + padding
+                let range = maximum - minimum
+
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color.white.opacity(0.035))
+
+                    ForEach(1..<4, id: \.self) { index in
+                        Path { path in
+                            let y = proxy.size.height * CGFloat(index) / 4
+                            path.move(to: CGPoint(x: 0, y: y))
+                            path.addLine(to: CGPoint(x: proxy.size.width, y: y))
+                        }
+                        .stroke(Color.white.opacity(0.045), lineWidth: 1)
+                    }
+
+                    ForEach(references) { reference in
+                        Path { path in
+                            let normalized = (reference.value - minimum) / range
+                            let y = proxy.size.height * (1 - CGFloat(normalized))
+                            path.move(to: CGPoint(x: 0, y: y))
+                            path.addLine(to: CGPoint(x: proxy.size.width, y: y))
+                        }
+                        .stroke(
+                            reference.color.opacity(reference.id == "spot" ? 0.76 : 0.58),
+                            style: StrokeStyle(
+                                lineWidth: reference.id == "spot" ? 1.15 : 1,
+                                lineCap: .round,
+                                dash: reference.dash
+                            )
+                        )
+                    }
+
+                    Path { path in
+                        guard trendValues.count >= 2 else { return }
+                        for (index, value) in trendValues.enumerated() {
+                            let x = proxy.size.width * CGFloat(index)
+                                / CGFloat(trendValues.count - 1)
+                            let normalized = (value - minimum) / range
+                            let y = proxy.size.height * (1 - CGFloat(normalized))
+                            let point = CGPoint(x: x, y: y)
+                            index == 0 ? path.move(to: point) : path.addLine(to: point)
+                        }
+                    }
+                    .stroke(
+                        trendColor,
+                        style: StrokeStyle(lineWidth: 1.7, lineCap: .round, lineJoin: .round)
+                    )
+
+                    if trendValues.count < 2 {
+                        Text("Collecting price history")
+                            .font(.system(size: 10, weight: .medium, design: .rounded))
+                            .foregroundStyle(Color.white.opacity(0.28))
+                    }
+                }
+                .clipped()
+            }
+        }
     }
 }
 
