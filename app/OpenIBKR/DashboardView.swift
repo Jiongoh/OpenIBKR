@@ -356,8 +356,10 @@ private struct DynamicIslandView: View {
     @State private var lastPointerLocation: CGPoint?
     @State private var suppressReactivationUntilPointerMoves = false
     @State private var scrollGate = IslandScrollGestureGate()
+    @State private var positionPopoverScrollGate = IslandScrollGestureGate()
     @State private var isAddingSymbol = false
     @State private var positionPopoverQuoteID: Int?
+    @State private var isPositionSlotListPresented = false
     @FocusState private var isSymbolFieldFocused: Bool
 
     private let interfaceActiveOverride: Bool?
@@ -710,6 +712,10 @@ private struct DynamicIslandView: View {
             .frame(maxWidth: .infinity)
             .frame(height: 44)
             .opacity((model.quoteTrends[quote.id] ?? []).count >= 2 ? 1 : 0)
+            // The complete ticker row owns the click gesture. Keeping the
+            // drawing view out of hit testing makes its full curve area part
+            // of the same reliable popup target as the text and prices.
+            .allowsHitTesting(false)
             .accessibilityHidden(true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -924,6 +930,13 @@ private struct DynamicIslandView: View {
         stepSelectedQuote(by: direction)
     }
 
+    private func handlePositionPopoverScroll(_ sample: IslandScrollSample) {
+        guard positionPopoverQuoteID != nil, !isPositionSlotListPresented else { return }
+        guard !model.snapshot.quotes.isEmpty else { return }
+        guard let direction = positionPopoverScrollGate.consume(sample) else { return }
+        stepSelectedQuote(by: direction)
+    }
+
     private func stepSelectedQuote(by offset: Int) {
         guard !model.snapshot.quotes.isEmpty else {
             selectedQuoteID = nil
@@ -950,12 +963,15 @@ private struct DynamicIslandView: View {
             selectedQuoteID = nextID
             if positionPopoverQuoteID != nil {
                 positionPopoverQuoteID = nextID
+                isPositionSlotListPresented = false
             }
         }
     }
 
     private func showPositionPopover(for quoteID: Int) {
         hoverGeneration += 1
+        positionPopoverScrollGate.reset()
+        isPositionSlotListPresented = false
         positionPopoverQuoteID = positionPopoverQuoteID == quoteID ? nil : quoteID
         if positionPopoverQuoteID == nil, !isPointerInside {
             setHovering(false)
@@ -969,6 +985,8 @@ private struct DynamicIslandView: View {
 
     private func dismissPositionPopover() {
         guard positionPopoverQuoteID != nil else { return }
+        positionPopoverScrollGate.reset()
+        isPositionSlotListPresented = false
         positionPopoverQuoteID = nil
         if !isPointerInside {
             setHovering(false)
@@ -1010,7 +1028,8 @@ private struct DynamicIslandView: View {
                     quote.validClose,
                     currency: quote.instrument.currency
                 ),
-                trendColor: quoteDailyChangeColor(quote)
+                trendColor: quoteDailyChangeColor(quote),
+                showsSlotList: $isPositionSlotListPresented
             )
             .frame(height: 142)
             .padding(.top, 16)
@@ -1093,6 +1112,13 @@ private struct DynamicIslandView: View {
             Color(red: 0.055, green: 0.055, blue: 0.062),
             in: RoundedRectangle(cornerRadius: 18, style: .continuous)
         )
+        .overlay {
+            ScrollWheelCaptureView { sample in
+                handlePositionPopoverScroll(sample)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .allowsHitTesting(false)
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Position details for \(quote.instrument.symbol)")
     }
@@ -1302,14 +1328,41 @@ private struct QuoteSparkline: View {
     }
 }
 
+struct PositionSlotSelection {
+    static func wrappedIndex(current: Int, offset: Int, count: Int) -> Int? {
+        guard count > 0 else { return nil }
+        return ((current + offset) % count + count) % count
+    }
+
+    static func nearestIndex(
+        values: [Double],
+        minimum: Double,
+        maximum: Double,
+        height: CGFloat,
+        pointerY: CGFloat
+    ) -> Int? {
+        guard !values.isEmpty, height > 0 else { return nil }
+        let range = maximum - minimum
+        guard range > 0 else { return 0 }
+        return values.enumerated().min { lhs, rhs in
+            let lhsY = height * (1 - CGFloat((lhs.element - minimum) / range))
+            let rhsY = height * (1 - CGFloat((rhs.element - minimum) / range))
+            return abs(lhsY - pointerY) < abs(rhsY - pointerY)
+        }?.offset
+    }
+}
+
 private struct PositionPriceChart: View {
     struct Reference: Identifiable {
         let id: String
         let title: String
         let value: Double
         let text: String
+        let detail: String?
         let color: Color
         let dash: [CGFloat]
+
+        var isSlot: Bool { id.hasPrefix("slot:") }
     }
 
     let points: [QuoteTrendPoint]
@@ -1320,6 +1373,9 @@ private struct PositionPriceChart: View {
     let averageCostText: String
     let previousCloseText: String
     let trendColor: Color
+    @Binding var showsSlotList: Bool
+
+    @State private var selectedSlotID: String?
 
     private var trendValues: [Double] {
         points.map { NSDecimalNumber(decimal: $0.price.value).doubleValue }
@@ -1336,6 +1392,14 @@ private struct PositionPriceChart: View {
         return formatter.string(from: NSDecimalNumber(decimal: price.value)) ?? "—"
     }
 
+    private func slotQuantityText(_ quantity: DecimalString) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.minimumFractionDigits = 0
+        formatter.maximumFractionDigits = 6
+        return formatter.string(from: NSDecimalNumber(decimal: quantity.value)) ?? "—"
+    }
+
     private var references: [Reference] {
         var result: [Reference] = []
         if let previousClose {
@@ -1345,6 +1409,7 @@ private struct PositionPriceChart: View {
                     title: "CLOSE",
                     value: NSDecimalNumber(decimal: previousClose).doubleValue,
                     text: previousCloseText,
+                    detail: nil,
                     color: Color.white.opacity(0.38),
                     dash: [2, 4]
                 )
@@ -1357,6 +1422,7 @@ private struct PositionPriceChart: View {
                     title: "AVG",
                     value: NSDecimalNumber(decimal: averageCost).doubleValue,
                     text: averageCostText,
+                    detail: nil,
                     color: Color.orange.opacity(0.82),
                     dash: [6, 4]
                 )
@@ -1366,35 +1432,161 @@ private struct PositionPriceChart: View {
             result.append(
                 Reference(
                     id: "slot:\(slot.id)",
-                    title: slot.isHistoricalBase ? "SLOT BASE" : "SLOT \(index + 1)",
+                    title: "SLOT \(index + 1)",
                     value: NSDecimalNumber(decimal: slot.price.value).doubleValue,
                     text: slotPriceText(slot.price),
-                    color: slot.isHistoricalBase
-                        ? Color(red: 0.54, green: 0.72, blue: 0.98)
-                        : Color(red: 0.49, green: 0.84, blue: 1.0),
-                    dash: slot.isHistoricalBase ? [3, 3] : []
+                    detail: "×\(slotQuantityText(slot.quantity))",
+                    color: Color(red: 0.49, green: 0.84, blue: 1.0),
+                    dash: []
                 )
             )
         }
         return result
     }
 
+    private var fixedReferences: [Reference] {
+        references.filter { !$0.isSlot }
+    }
+
+    private var slotReferences: [Reference] {
+        references.filter(\.isSlot)
+    }
+
+    private var selectedSlot: Reference? {
+        selectedSlotID.flatMap { id in slotReferences.first { $0.id == id } }
+    }
+
+    private var selectedSlotIndex: Int? {
+        selectedSlotID.flatMap { id in slotReferences.firstIndex { $0.id == id } }
+    }
+
+    private func legend(for reference: Reference) -> some View {
+        HStack(spacing: 5) {
+            Capsule()
+                .fill(reference.color)
+                .frame(width: 10, height: 1)
+            Text("\(reference.title) \(reference.text)")
+                .font(.system(size: 9, weight: .medium, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(Color.white.opacity(0.52))
+                .lineLimit(1)
+        }
+    }
+
+    private func selectNearestSlot(
+        pointerY: CGFloat,
+        minimum: Double,
+        maximum: Double,
+        height: CGFloat
+    ) {
+        guard !showsSlotList else { return }
+        guard let index = PositionSlotSelection.nearestIndex(
+            values: slotReferences.map(\.value),
+            minimum: minimum,
+            maximum: maximum,
+            height: height,
+            pointerY: pointerY
+        ) else { return }
+        selectedSlotID = slotReferences[index].id
+    }
+
+    private var slotList: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            LazyVGrid(
+                columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible())],
+                spacing: 6
+            ) {
+                ForEach(slotReferences) { slot in
+                    Button {
+                        withAnimation(.easeOut(duration: 0.16)) {
+                            selectedSlotID = slot.id
+                            showsSlotList = false
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(
+                                    selectedSlotID == slot.id
+                                        ? slot.color
+                                        : Color.white.opacity(0.18)
+                                )
+                                .frame(width: 5, height: 5)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(slot.title)
+                                    .foregroundStyle(Color.white.opacity(0.48))
+                                Text(slot.text)
+                                    .monospacedDigit()
+                                    .foregroundStyle(Color.white.opacity(0.82))
+                            }
+                            .font(.system(size: 9, weight: .medium, design: .rounded))
+                            Spacer(minLength: 2)
+                            if let detail = slot.detail {
+                                Text(detail)
+                                    .font(.system(size: 8, weight: .medium, design: .rounded))
+                                    .monospacedDigit()
+                                    .foregroundStyle(Color.white.opacity(0.32))
+                            }
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .background(
+                            Color.white.opacity(selectedSlotID == slot.id ? 0.09 : 0.035),
+                            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { isInside in
+                        if isInside { selectedSlotID = slot.id }
+                    }
+                }
+            }
+            .padding(8)
+        }
+        .background(Color.black.opacity(0.92), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        }
+        .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .topTrailing)))
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    ForEach(references) { reference in
-                        HStack(spacing: 5) {
-                            Capsule()
-                                .fill(reference.color)
-                                .frame(width: 10, height: reference.id.hasPrefix("slot:") ? 2 : 1)
-                            Text("\(reference.title) \(reference.text)")
-                                .font(.system(size: 9, weight: .medium, design: .rounded))
-                                .monospacedDigit()
-                                .foregroundStyle(Color.white.opacity(0.52))
-                                .lineLimit(1)
+            HStack(spacing: 12) {
+                ForEach(fixedReferences) { reference in
+                    legend(for: reference)
+                }
+
+                Spacer(minLength: 4)
+
+                if !slotReferences.isEmpty {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.16)) {
+                            showsSlotList.toggle()
+                            if showsSlotList, selectedSlotID == nil {
+                                selectedSlotID = slotReferences.first?.id
+                            }
                         }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(Color(red: 0.49, green: 0.84, blue: 1.0).opacity(0.82))
+                                .frame(width: 5, height: 5)
+                            Text(
+                                selectedSlotIndex.map { "SLOT \($0 + 1)/\(slotReferences.count)" }
+                                    ?? "SLOTS ×\(slotReferences.count)"
+                            )
+                            Image(systemName: showsSlotList ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 7, weight: .bold))
+                        }
+                        .font(.system(size: 9, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.white.opacity(0.56))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.white.opacity(0.055), in: Capsule())
                     }
+                    .buttonStyle(.plain)
+                    .help("Show all position slots")
                 }
             }
 
@@ -1422,6 +1614,7 @@ private struct PositionPriceChart: View {
                     }
 
                     ForEach(references) { reference in
+                        let isSelectedSlot = reference.id == selectedSlotID
                         Path { path in
                             let normalized = (reference.value - minimum) / range
                             let y = proxy.size.height * (1 - CGFloat(normalized))
@@ -1429,9 +1622,13 @@ private struct PositionPriceChart: View {
                             path.addLine(to: CGPoint(x: proxy.size.width, y: y))
                         }
                         .stroke(
-                            reference.color.opacity(reference.id.hasPrefix("slot:") ? 0.78 : 0.58),
+                            reference.color.opacity(
+                                reference.isSlot
+                                    ? (isSelectedSlot ? 0.98 : (selectedSlotID == nil ? 0.34 : 0.15))
+                                    : 0.58
+                            ),
                             style: StrokeStyle(
-                                lineWidth: reference.id.hasPrefix("slot:") ? 1.15 : 1,
+                                lineWidth: reference.isSlot ? (isSelectedSlot ? 1.8 : 0.9) : 1,
                                 lineCap: .round,
                                 dash: reference.dash
                             )
@@ -1459,9 +1656,54 @@ private struct PositionPriceChart: View {
                             .font(.system(size: 10, weight: .medium, design: .rounded))
                             .foregroundStyle(Color.white.opacity(0.28))
                     }
+
+                    if let selectedSlot {
+                        let normalized = (selectedSlot.value - minimum) / range
+                        let labelY = min(
+                            max(proxy.size.height * (1 - CGFloat(normalized)), 13),
+                            proxy.size.height - 13
+                        )
+                        Text("\(selectedSlot.title)  \(selectedSlot.text)")
+                            .font(.system(size: 9, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(Color.white.opacity(0.90))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 4)
+                            .background(Color.black.opacity(0.82), in: Capsule())
+                            .overlay {
+                                Capsule()
+                                    .stroke(selectedSlot.color.opacity(0.35), lineWidth: 1)
+                            }
+                            .position(x: max(62, proxy.size.width - 64), y: labelY)
+                            .allowsHitTesting(false)
+                    }
+
+                    if showsSlotList {
+                        slotList
+                            .padding(4)
+                    }
                 }
                 .clipped()
+                .onContinuousHover { phase in
+                    switch phase {
+                    case let .active(location):
+                        selectNearestSlot(
+                            pointerY: location.y,
+                            minimum: minimum,
+                            maximum: maximum,
+                            height: proxy.size.height
+                        )
+                    case .ended:
+                        if !showsSlotList { selectedSlotID = nil }
+                    }
+                }
             }
+        }
+        .onChange(of: slotReferences.map(\.id)) { _, ids in
+            if let selectedSlotID, !ids.contains(selectedSlotID) {
+                self.selectedSlotID = nil
+            }
+            if ids.isEmpty { showsSlotList = false }
         }
     }
 }

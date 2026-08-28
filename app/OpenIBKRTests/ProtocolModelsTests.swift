@@ -9,6 +9,13 @@ final class ProtocolModelsTests: XCTestCase {
         )
     }
 
+    func testCloudflareCredentialsUseDedicatedTeamIDSignedKeychainService() {
+        XCTAssertEqual(
+            CloudflareCredentialsStore.service,
+            "com.openibkr.cloudflare.wealth.v1"
+        )
+    }
+
     @MainActor
     func testFloatingPanelAdaptsToContentAndDisablesBackgroundDragging() throws {
         let controller = FloatingPanelController(model: AppModel())
@@ -140,6 +147,35 @@ final class ProtocolModelsTests: XCTestCase {
         XCTAssertEqual(
             IslandWatchlistSelection.visibleIndicatorRange(selected: 0, count: 0),
             0..<0
+        )
+    }
+
+    func testPositionSlotSelectionWrapsForContinuousScrolling() {
+        XCTAssertEqual(PositionSlotSelection.wrappedIndex(current: 2, offset: 1, count: 3), 0)
+        XCTAssertEqual(PositionSlotSelection.wrappedIndex(current: 0, offset: -1, count: 3), 2)
+        XCTAssertNil(PositionSlotSelection.wrappedIndex(current: 0, offset: 1, count: 0))
+    }
+
+    func testPositionSlotSelectionFindsLineNearestPointer() {
+        XCTAssertEqual(
+            PositionSlotSelection.nearestIndex(
+                values: [90, 100, 110],
+                minimum: 80,
+                maximum: 120,
+                height: 100,
+                pointerY: 27
+            ),
+            2
+        )
+        XCTAssertEqual(
+            PositionSlotSelection.nearestIndex(
+                values: [90, 100, 110],
+                minimum: 80,
+                maximum: 120,
+                height: 100,
+                pointerY: 76
+            ),
+            0
         )
     }
 

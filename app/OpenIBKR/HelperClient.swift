@@ -73,6 +73,31 @@ struct HelperClient {
         return try ProtocolCoding.decoder().decode(MarketDataStatus.self, from: data)
     }
 
+    func configureWealth(
+        credentials: CloudflareAccessCredentials
+    ) async throws -> WealthLotsStatus {
+        let payload = WealthCredentialPayload(
+            baseURL: credentials.baseURL,
+            clientID: credentials.clientID,
+            clientSecret: credentials.clientSecret
+        )
+        let body = try ProtocolCoding.encoder().encode(payload)
+        let data = try await request(
+            path: "/v1/positions/wealth/credentials",
+            method: "POST",
+            body: body
+        )
+        return try ProtocolCoding.decoder().decode(WealthLotsStatus.self, from: data)
+    }
+
+    func clearWealthCredentials() async throws -> WealthLotsStatus {
+        let data = try await request(
+            path: "/v1/positions/wealth/credentials",
+            method: "DELETE"
+        )
+        return try ProtocolCoding.decoder().decode(WealthLotsStatus.self, from: data)
+    }
+
     func add(symbol: String) async throws {
         let body = try ProtocolCoding.encoder().encode(ContractQuery(symbol: symbol))
         _ = try await request(path: "/v1/watchlist", method: "POST", body: body)
@@ -159,4 +184,10 @@ struct HelperClient {
 private struct AlpacaCredentialPayload: Encodable {
     let keyID: String
     let secretKey: String
+}
+
+private struct WealthCredentialPayload: Encodable {
+    let baseURL: String
+    let clientID: String
+    let clientSecret: String
 }

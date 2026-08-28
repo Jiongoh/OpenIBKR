@@ -197,6 +197,24 @@ struct MarketDataStatus: Codable, Equatable {
     }
 }
 
+struct WealthLotsStatus: Codable, Equatable {
+    var configured: Bool
+    var active: Bool
+    var reportDate: String?
+    var lotCount: Int
+    var lastUpdateAt: Date?
+    var error: String?
+
+    static let empty = WealthLotsStatus(
+        configured: false,
+        active: false,
+        reportDate: nil,
+        lotCount: 0,
+        lastUpdateAt: nil,
+        error: nil
+    )
+}
+
 struct AppSnapshot: Codable {
     var protocolVersion: Int
     var sequence: Int

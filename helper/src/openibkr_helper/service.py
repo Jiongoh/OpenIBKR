@@ -14,12 +14,23 @@ from .events import (
     AdapterEvent,
     ConnectionEvent,
     MarketDataTypeEvent,
+    PositionCostSlotsEvent,
+    PositionEvent,
     QuoteEvent,
     QuoteResetEvent,
 )
-from .models import AlpacaCredentials, AppSnapshot, ContractQuery, Instrument, MarketDataStatus
+from .models import (
+    AlpacaCredentials,
+    AppSnapshot,
+    ContractQuery,
+    Instrument,
+    MarketDataStatus,
+    WealthAccessCredentials,
+    WealthLotsStatus,
+)
 from .state import SnapshotStore
 from .subscriptions import SubscriptionManager
+from .wealth import WealthLotsProvider
 
 logger = logging.getLogger("openibkr.service")
 
@@ -35,6 +46,7 @@ class HelperService:
         adapter: ReadOnlyDataAdapter,
         database: Database | None = None,
         market_data: AlpacaOvernightProvider | None = None,
+        wealth_lots: WealthLotsProvider | None = None,
     ) -> None:
         self.settings = settings
         self.adapter = adapter
@@ -42,9 +54,11 @@ class HelperService:
         self.store = SnapshotStore()
         self.subscriptions = SubscriptionManager(adapter, self.store)
         self.market_data = market_data or AlpacaOvernightProvider()
+        self.wealth_lots = wealth_lots or WealthLotsProvider()
         self.started_monotonic = time.monotonic()
         self._stale_task: asyncio.Task[None] | None = None
         self._persistence_task: asyncio.Task[None] | None = None
+        self._wealth_refresh_task: asyncio.Task[None] | None = None
         self._started = False
         self._contract_candidates: dict[int, Instrument] = {}
         self._last_pnl_minute: str | None = None
@@ -75,6 +89,9 @@ class HelperService:
         self._persistence_task = asyncio.create_task(
             self._persistence_loop(), name="openibkr-persistence"
         )
+        self._wealth_refresh_task = asyncio.create_task(
+            self._wealth_refresh_loop(), name="openibkr-wealth-refresh"
+        )
         self._started = True
 
     async def stop(self) -> None:
@@ -89,6 +106,10 @@ class HelperService:
             self._persistence_task.cancel()
             await asyncio.gather(self._persistence_task, return_exceptions=True)
             self._persistence_task = None
+        if self._wealth_refresh_task is not None:
+            self._wealth_refresh_task.cancel()
+            await asyncio.gather(self._wealth_refresh_task, return_exceptions=True)
+            self._wealth_refresh_task = None
         await self.market_data.stop()
         await self.subscriptions.stop()
         await self.adapter.stop()
@@ -108,7 +129,13 @@ class HelperService:
             event, (QuoteEvent, QuoteResetEvent, MarketDataTypeEvent)
         ):
             return
+        # Cost lots come from the complete Flex-derived Wealth snapshot. The
+        # Gateway execution callback contains only a bounded recent history.
+        if isinstance(event, PositionCostSlotsEvent):
+            return
         await self.store.apply(event)
+        if isinstance(event, PositionEvent):
+            await self._apply_wealth_slots(event.con_id, event.quantity)
 
     async def handle_market_data_event(self, event: AdapterEvent) -> None:
         await self.store.apply(event)
@@ -127,6 +154,23 @@ class HelperService:
 
     async def clear_alpaca(self) -> MarketDataStatus:
         return await self.market_data.clear()
+
+    def wealth_status(self) -> WealthLotsStatus:
+        return self.wealth_lots.status()
+
+    async def configure_wealth(
+        self, credentials: WealthAccessCredentials
+    ) -> WealthLotsStatus:
+        status = await self.wealth_lots.configure(credentials)
+        await self._reconcile_wealth_slots()
+        return status
+
+    async def clear_wealth(self) -> WealthLotsStatus:
+        status = await self.wealth_lots.clear()
+        snapshot = await self.store.snapshot()
+        for position in snapshot.positions:
+            await self.store.apply(PositionCostSlotsEvent(position.con_id, ()))
+        return status
 
     async def add_watchlist(self, query: ContractQuery) -> Instrument:
         instrument = await self.adapter.resolve_contract(query)
@@ -182,3 +226,21 @@ class HelperService:
             minute = snapshot.pnl.received_at.replace(second=0, microsecond=0).isoformat()
             if minute != self._last_pnl_minute and self.database.save_pnl_minute(snapshot):
                 self._last_pnl_minute = minute
+
+    async def _wealth_refresh_loop(self) -> None:
+        while True:
+            await asyncio.sleep(15 * 60)
+            status = await self.wealth_lots.refresh()
+            if status.configured:
+                await self._reconcile_wealth_slots()
+
+    async def _reconcile_wealth_slots(self) -> None:
+        snapshot = await self.store.snapshot()
+        for position in snapshot.positions:
+            await self._apply_wealth_slots(position.con_id, position.quantity)
+
+    async def _apply_wealth_slots(self, con_id: int, quantity) -> None:
+        if not self.wealth_lots.status().configured:
+            return
+        slots = self.wealth_lots.slots_for_position(con_id, quantity)
+        await self.store.apply(PositionCostSlotsEvent(con_id, slots))

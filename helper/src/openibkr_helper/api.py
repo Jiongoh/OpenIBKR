@@ -18,6 +18,8 @@ from .models import (
     HealthResponse,
     Instrument,
     MarketDataStatus,
+    WealthAccessCredentials,
+    WealthLotsStatus,
 )
 from .service import HelperService, WatchlistFullError
 
@@ -89,6 +91,30 @@ def create_app(service: HelperService) -> FastAPI:
     )
     async def clear_alpaca() -> MarketDataStatus:
         return await service.clear_alpaca()
+
+    @app.get(
+        "/v1/positions/wealth/status",
+        response_model=WealthLotsStatus,
+        dependencies=[Depends(authorize)],
+    )
+    async def wealth_status() -> WealthLotsStatus:
+        return service.wealth_status()
+
+    @app.post(
+        "/v1/positions/wealth/credentials",
+        response_model=WealthLotsStatus,
+        dependencies=[Depends(authorize)],
+    )
+    async def configure_wealth(credentials: WealthAccessCredentials) -> WealthLotsStatus:
+        return await service.configure_wealth(credentials)
+
+    @app.delete(
+        "/v1/positions/wealth/credentials",
+        response_model=WealthLotsStatus,
+        dependencies=[Depends(authorize)],
+    )
+    async def clear_wealth() -> WealthLotsStatus:
+        return await service.clear_wealth()
 
     @app.get(
         "/v1/watchlist",

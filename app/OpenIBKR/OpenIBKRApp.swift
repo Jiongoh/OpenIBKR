@@ -165,6 +165,11 @@ private struct SettingsView: View {
     @State private var alpacaSecret = ""
     @State private var alpacaSettingsError: String?
     @State private var isSavingAlpaca = false
+    @State private var wealthBaseURL = ""
+    @State private var cloudflareClientID = ""
+    @State private var cloudflareClientSecret = ""
+    @State private var cloudflareSettingsError: String?
+    @State private var isSavingCloudflare = false
 
     var body: some View {
         TabView {
@@ -314,6 +319,106 @@ private struct SettingsView: View {
                     SettingsMessage(text: message, color: .secondary, systemImage: "checkmark.circle.fill")
                 }
             }
+
+            Section {
+                LabeledContent("Service") {
+                    SettingsStatusBadge(
+                        title: cloudflareStatusTitle,
+                        color: cloudflareStatusColor
+                    )
+                }
+                LabeledContent("Credentials") {
+                    Label(
+                        model.hasCloudflareCredentials ? "Stored in Keychain" : "Not Stored",
+                        systemImage: model.hasCloudflareCredentials ? "lock.fill" : "lock.open"
+                    )
+                    .foregroundStyle(model.hasCloudflareCredentials ? .secondary : .tertiary)
+                }
+                LabeledContent("Position Lots") {
+                    if model.wealthLotsStatus.active {
+                        Text("\(model.wealthLotsStatus.lotCount) · \(model.wealthLotsStatus.reportDate ?? "Unknown date")")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("No verified lot snapshot")
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            } header: {
+                SettingsSectionHeader(
+                    title: "Cloudflare Wealth Lots",
+                    subtitle: "Tax-lot costs from the protected Wealth API",
+                    systemImage: "cloud.fill"
+                )
+            }
+
+            Section {
+                LabeledContent("Wealth URL") {
+                    TextField(
+                        model.hasCloudflareCredentials ? "Enter a replacement URL" : "https://wealth.example.com",
+                        text: $wealthBaseURL
+                    )
+                    .textFieldStyle(.roundedBorder)
+                }
+                LabeledContent("Client ID") {
+                    TextField(
+                        model.hasCloudflareCredentials ? "Enter a replacement Client ID" : "Required",
+                        text: $cloudflareClientID
+                    )
+                    .textFieldStyle(.roundedBorder)
+                }
+                LabeledContent("Client Secret") {
+                    SecureField(
+                        model.hasCloudflareCredentials ? "Enter a replacement secret" : "Required",
+                        text: $cloudflareClientSecret
+                    )
+                    .textFieldStyle(.roundedBorder)
+                }
+
+                HStack(spacing: 8) {
+                    if model.hasCloudflareCredentials {
+                        Button("Remove Credentials", role: .destructive) {
+                            removeCloudflareCredentials()
+                        }
+                        .disabled(isSavingCloudflare)
+                    }
+                    Spacer()
+                    if isSavingCloudflare {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Button(model.hasCloudflareCredentials ? "Replace & Connect" : "Save & Connect") {
+                        saveCloudflareCredentials()
+                    }
+                    .accessibilityLabel(
+                        model.hasCloudflareCredentials
+                            ? "Replace Cloudflare Credentials and Connect"
+                            : "Save Cloudflare Credentials and Connect"
+                    )
+                    .buttonStyle(.borderedProminent)
+                    .disabled(
+                        isSavingCloudflare
+                            || wealthBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || cloudflareClientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || cloudflareClientSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    )
+                }
+            } header: {
+                Text("Cloudflare Access")
+            } footer: {
+                Text(
+                    "The token stays in this Mac's Keychain. OpenIBKR sends it only to the configured HTTPS origin and only requests /api/positions/lots."
+                )
+            }
+
+            if let error = cloudflareSettingsError ?? model.wealthLotsStatus.error {
+                Section {
+                    SettingsMessage(text: error, color: .orange, systemImage: "exclamationmark.triangle.fill")
+                }
+            } else if let message = model.cloudflareCredentialMessage {
+                Section {
+                    SettingsMessage(text: message, color: .secondary, systemImage: "checkmark.circle.fill")
+                }
+            }
         }
         .formStyle(.grouped)
     }
@@ -380,6 +485,20 @@ private struct SettingsView: View {
         return .secondary
     }
 
+    private var cloudflareStatusTitle: String {
+        if model.wealthLotsStatus.error != nil { return "Unavailable" }
+        if model.wealthLotsStatus.active { return "Active" }
+        if model.wealthLotsStatus.configured || model.hasCloudflareCredentials { return "Standby" }
+        return "Not Configured"
+    }
+
+    private var cloudflareStatusColor: Color {
+        if model.wealthLotsStatus.error != nil { return .orange }
+        if model.wealthLotsStatus.active { return .green }
+        if model.wealthLotsStatus.configured || model.hasCloudflareCredentials { return .blue }
+        return .secondary
+    }
+
     private func saveAlpacaCredentials() {
         let keyID = alpacaKeyID.trimmingCharacters(in: .whitespacesAndNewlines)
         let secret = alpacaSecret.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -409,6 +528,45 @@ private struct SettingsView: View {
                 alpacaSettingsError = error.localizedDescription
             }
             isSavingAlpaca = false
+        }
+    }
+
+    private func saveCloudflareCredentials() {
+        let baseURL = wealthBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clientID = cloudflareClientID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clientSecret = cloudflareClientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+        isSavingCloudflare = true
+        cloudflareSettingsError = nil
+        Task {
+            do {
+                try await model.saveCloudflareCredentials(
+                    baseURL: baseURL,
+                    clientID: clientID,
+                    clientSecret: clientSecret
+                )
+                wealthBaseURL = ""
+                cloudflareClientID = ""
+                cloudflareClientSecret = ""
+            } catch {
+                cloudflareSettingsError = error.localizedDescription
+            }
+            isSavingCloudflare = false
+        }
+    }
+
+    private func removeCloudflareCredentials() {
+        isSavingCloudflare = true
+        cloudflareSettingsError = nil
+        Task {
+            do {
+                try await model.removeCloudflareCredentials()
+                wealthBaseURL = ""
+                cloudflareClientID = ""
+                cloudflareClientSecret = ""
+            } catch {
+                cloudflareSettingsError = error.localizedDescription
+            }
+            isSavingCloudflare = false
         }
     }
 

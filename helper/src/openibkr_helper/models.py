@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Literal
@@ -116,7 +116,7 @@ class PositionCostSlot(ProtocolModel):
     id: str = Field(min_length=1, max_length=96)
     quantity: Decimal = Field(gt=0)
     price: Decimal = Field(gt=0)
-    source: Literal["historical_base", "execution"]
+    source: Literal["historical_base", "execution", "wealth_lot"]
 
 
 class PositionSnapshot(ProtocolModel):
@@ -142,6 +142,28 @@ class AlpacaCredentials(ProtocolModel):
         if value.strip() != value or not value:
             raise ValueError("credential must not contain surrounding whitespace")
         return value
+
+
+class WealthAccessCredentials(ProtocolModel):
+    base_url: str = Field(min_length=9, max_length=512)
+    client_id: str = Field(min_length=8, max_length=512, repr=False)
+    client_secret: str = Field(min_length=16, max_length=1024, repr=False)
+
+    @field_validator("base_url", "client_id", "client_secret")
+    @classmethod
+    def reject_surrounding_whitespace(cls, value: str) -> str:
+        if value.strip() != value or not value:
+            raise ValueError("Cloudflare configuration must not contain surrounding whitespace")
+        return value
+
+
+class WealthLotsStatus(ProtocolModel):
+    configured: bool = False
+    active: bool = False
+    report_date: date | None = None
+    lot_count: int = Field(default=0, ge=0, le=100_000)
+    last_update_at: datetime | None = None
+    error: str | None = Field(default=None, max_length=256)
 
 
 class MarketDataStatus(ProtocolModel):

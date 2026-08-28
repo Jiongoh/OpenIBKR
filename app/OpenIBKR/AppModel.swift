@@ -69,6 +69,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var quoteTrends: [Int: [QuoteTrendPoint]]
     @Published private(set) var hasAlpacaCredentials = false
     @Published private(set) var alpacaCredentialMessage: String?
+    @Published private(set) var hasCloudflareCredentials = false
+    @Published private(set) var cloudflareCredentialMessage: String?
+    @Published private(set) var wealthLotsStatus = WealthLotsStatus.empty
     @Published private(set) var errorMessage: String?
     @Published private(set) var symbolErrorMessage: String?
     @Published private(set) var isSearchingSymbol = false
@@ -95,17 +98,22 @@ final class AppModel: ObservableObject {
     private var submittedSymbol: String?
     private let trendDefaults: UserDefaults
     private let credentialsStore: AlpacaCredentialsStore
+    private let cloudflareCredentialsStore: CloudflareCredentialsStore
     private let trendDefaultsKey = "openibkr.quote-trends.v1"
     private let legacyKeychainMarker = "openibkr.keychain-access.v1"
     private var didLoadStoredAlpacaCredentials = false
     private var storedAlpacaCredentials: AlpacaCredentials?
+    private var didLoadStoredCloudflareCredentials = false
+    private var storedCloudflareCredentials: CloudflareAccessCredentials?
 
     init(
         defaults: UserDefaults = .standard,
-        credentialsStore: AlpacaCredentialsStore = AlpacaCredentialsStore()
+        credentialsStore: AlpacaCredentialsStore = AlpacaCredentialsStore(),
+        cloudflareCredentialsStore: CloudflareCredentialsStore = CloudflareCredentialsStore()
     ) {
         trendDefaults = defaults
         self.credentialsStore = credentialsStore
+        self.cloudflareCredentialsStore = cloudflareCredentialsStore
         let decoded: [Int: [QuoteTrendPoint]]
         if let data = defaults.data(forKey: trendDefaultsKey),
            let stored = try? JSONDecoder().decode([Int: [QuoteTrendPoint]].self, from: data)
@@ -127,6 +135,7 @@ final class AppModel: ObservableObject {
         startTrendCleanup()
         reconnect()
         Task { await injectStoredAlpacaCredentials() }
+        Task { await injectStoredCloudflareCredentials() }
     }
 
     func configure(endpoint: HelperEndpoint) {
@@ -134,6 +143,7 @@ final class AppModel: ObservableObject {
         startTrendCleanup()
         reconnect()
         Task { await injectStoredAlpacaCredentials() }
+        Task { await injectStoredCloudflareCredentials() }
     }
 
     func saveAlpacaCredentials(keyID: String, secretKey: String) async throws {
@@ -160,6 +170,43 @@ final class AppModel: ObservableObject {
         guard let endpoint else { return }
         let status = try await HelperClient(endpoint: endpoint).clearAlpacaCredentials()
         snapshot.marketData = status
+    }
+
+    func saveCloudflareCredentials(
+        baseURL: String,
+        clientID: String,
+        clientSecret: String
+    ) async throws {
+        let credentials = CloudflareAccessCredentials(
+            baseURL: baseURL,
+            clientID: clientID,
+            clientSecret: clientSecret
+        )
+        try cloudflareCredentialsStore.save(credentials)
+        storedCloudflareCredentials = credentials
+        didLoadStoredCloudflareCredentials = true
+        hasCloudflareCredentials = true
+        cloudflareCredentialMessage = "Saved securely in macOS Keychain"
+        guard let endpoint else { return }
+        wealthLotsStatus = try await HelperClient(endpoint: endpoint).configureWealth(
+            credentials: credentials
+        )
+        cloudflareCredentialMessage = wealthLotsStatus.active
+            ? "Connected to the protected Wealth API"
+            : wealthLotsStatus.error
+    }
+
+    func removeCloudflareCredentials() async throws {
+        try cloudflareCredentialsStore.delete()
+        storedCloudflareCredentials = nil
+        didLoadStoredCloudflareCredentials = true
+        hasCloudflareCredentials = false
+        cloudflareCredentialMessage = "Cloudflare credentials removed"
+        guard let endpoint else {
+            wealthLotsStatus = .empty
+            return
+        }
+        wealthLotsStatus = try await HelperClient(endpoint: endpoint).clearWealthCredentials()
     }
 
     func reportRuntimeError(_ error: Error) {
@@ -434,6 +481,46 @@ final class AppModel: ObservableObject {
             alpacaCredentialMessage = nil
         } catch {
             alpacaCredentialMessage = error.localizedDescription
+        }
+    }
+
+    private func injectStoredCloudflareCredentials() async {
+        if !didLoadStoredCloudflareCredentials {
+            didLoadStoredCloudflareCredentials = true
+            let store = cloudflareCredentialsStore
+            do {
+                storedCloudflareCredentials = try await Task.detached(priority: .utility) {
+                    try store.load()
+                }.value
+                hasCloudflareCredentials = storedCloudflareCredentials != nil
+            } catch {
+                storedCloudflareCredentials = nil
+                hasCloudflareCredentials = false
+                cloudflareCredentialMessage = error.localizedDescription
+                return
+            }
+        }
+
+        guard let credentials = storedCloudflareCredentials,
+              let endpoint
+        else { return }
+
+        do {
+            wealthLotsStatus = try await HelperClient(endpoint: endpoint).configureWealth(
+                credentials: credentials
+            )
+            cloudflareCredentialMessage = wealthLotsStatus.error
+                ?? "Connected to the protected Wealth API"
+        } catch {
+            wealthLotsStatus = WealthLotsStatus(
+                configured: true,
+                active: false,
+                reportDate: nil,
+                lotCount: 0,
+                lastUpdateAt: nil,
+                error: error.localizedDescription
+            )
+            cloudflareCredentialMessage = error.localizedDescription
         }
     }
 
