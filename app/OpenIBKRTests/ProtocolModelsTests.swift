@@ -179,6 +179,34 @@ final class ProtocolModelsTests: XCTestCase {
         )
     }
 
+    func testPositionChartHoverSelectsPriceCurveNearItsInterpolatedPath() {
+        XCTAssertEqual(
+            PositionChartHoverSelection.target(
+                trendValues: [90, 110],
+                slotValues: [100],
+                minimum: 80,
+                maximum: 120,
+                size: CGSize(width: 200, height: 100),
+                pointer: CGPoint(x: 160, y: 30)
+            ),
+            .trend(1)
+        )
+    }
+
+    func testPositionChartHoverKeepsSlotSelectionWhenSlotLineIsCloser() {
+        XCTAssertEqual(
+            PositionChartHoverSelection.target(
+                trendValues: [90, 110],
+                slotValues: [100],
+                minimum: 80,
+                maximum: 120,
+                size: CGSize(width: 200, height: 100),
+                pointer: CGPoint(x: 160, y: 49)
+            ),
+            .slot(0)
+        )
+    }
+
     func testScrollGestureGateSwitchesOnceAndIgnoresMomentum() {
         var gate = IslandScrollGestureGate(threshold: 20, discreteGestureGap: 0.24)
 

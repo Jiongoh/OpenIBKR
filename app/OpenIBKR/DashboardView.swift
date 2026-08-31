@@ -1352,6 +1352,61 @@ struct PositionSlotSelection {
     }
 }
 
+struct PositionChartHoverSelection {
+    enum Target: Equatable {
+        case trend(Int)
+        case slot(Int)
+    }
+
+    static func target(
+        trendValues: [Double],
+        slotValues: [Double],
+        minimum: Double,
+        maximum: Double,
+        size: CGSize,
+        pointer: CGPoint
+    ) -> Target? {
+        guard size.width > 0, size.height > 0, maximum > minimum else { return nil }
+        let range = maximum - minimum
+        let yPosition: (Double) -> CGFloat = { value in
+            size.height * (1 - CGFloat((value - minimum) / range))
+        }
+
+        var slotCandidate: (index: Int, distance: CGFloat)?
+        for (index, value) in slotValues.enumerated() {
+            let distance = abs(yPosition(value) - pointer.y)
+            if slotCandidate == nil || distance < slotCandidate!.distance {
+                slotCandidate = (index, distance)
+            }
+        }
+
+        guard !trendValues.isEmpty else {
+            return slotCandidate.map { .slot($0.index) }
+        }
+        if trendValues.count == 1 {
+            let trendDistance = abs(yPosition(trendValues[0]) - pointer.y)
+            if let slotCandidate, slotCandidate.distance < trendDistance {
+                return .slot(slotCandidate.index)
+            }
+            return .trend(0)
+        }
+
+        let horizontalProgress = min(max(pointer.x / size.width, 0), 1)
+        let fractionalIndex = horizontalProgress * CGFloat(trendValues.count - 1)
+        let lowerIndex = min(Int(floor(fractionalIndex)), trendValues.count - 1)
+        let upperIndex = min(lowerIndex + 1, trendValues.count - 1)
+        let interpolation = Double(fractionalIndex - CGFloat(lowerIndex))
+        let curveValue = trendValues[lowerIndex]
+            + (trendValues[upperIndex] - trendValues[lowerIndex]) * interpolation
+        let trendDistance = abs(yPosition(curveValue) - pointer.y)
+
+        if let slotCandidate, slotCandidate.distance < trendDistance {
+            return .slot(slotCandidate.index)
+        }
+        return .trend(min(Int(fractionalIndex.rounded()), trendValues.count - 1))
+    }
+}
+
 private struct PositionPriceChart: View {
     struct Reference: Identifiable {
         let id: String
@@ -1376,6 +1431,7 @@ private struct PositionPriceChart: View {
     @Binding var showsSlotList: Bool
 
     @State private var selectedSlotID: String?
+    @State private var selectedTrendIndex: Int?
 
     private var trendValues: [Double] {
         points.map { NSDecimalNumber(decimal: $0.price.value).doubleValue }
@@ -1398,6 +1454,11 @@ private struct PositionPriceChart: View {
         formatter.minimumFractionDigits = 0
         formatter.maximumFractionDigits = 6
         return formatter.string(from: NSDecimalNumber(decimal: quantity.value)) ?? "—"
+    }
+
+    private func trendPriceText(at index: Int) -> String {
+        guard points.indices.contains(index) else { return "—" }
+        return slotPriceText(points[index].price)
     }
 
     private var references: [Reference] {
@@ -1473,21 +1534,36 @@ private struct PositionPriceChart: View {
         }
     }
 
-    private func selectNearestSlot(
-        pointerY: CGFloat,
+    private func selectNearestChartElement(
+        pointer: CGPoint,
         minimum: Double,
         maximum: Double,
-        height: CGFloat
+        size: CGSize
     ) {
         guard !showsSlotList else { return }
-        guard let index = PositionSlotSelection.nearestIndex(
-            values: slotReferences.map(\.value),
+        let target = PositionChartHoverSelection.target(
+            trendValues: trendValues,
+            slotValues: slotReferences.map(\.value),
             minimum: minimum,
             maximum: maximum,
-            height: height,
-            pointerY: pointerY
-        ) else { return }
-        selectedSlotID = slotReferences[index].id
+            size: size,
+            pointer: pointer
+        )
+        withAnimation(.easeOut(duration: 0.13)) {
+            switch target {
+            case let .trend(index):
+                selectedTrendIndex = index
+                selectedSlotID = nil
+            case let .slot(index):
+                selectedTrendIndex = nil
+                selectedSlotID = slotReferences.indices.contains(index)
+                    ? slotReferences[index].id
+                    : nil
+            case nil:
+                selectedTrendIndex = nil
+                selectedSlotID = nil
+            }
+        }
     }
 
     private var slotList: some View {
@@ -1562,6 +1638,7 @@ private struct PositionPriceChart: View {
                 if !slotReferences.isEmpty {
                     Button {
                         withAnimation(.easeOut(duration: 0.16)) {
+                            selectedTrendIndex = nil
                             showsSlotList.toggle()
                             if showsSlotList, selectedSlotID == nil {
                                 selectedSlotID = slotReferences.first?.id
@@ -1624,7 +1701,11 @@ private struct PositionPriceChart: View {
                         .stroke(
                             reference.color.opacity(
                                 reference.isSlot
-                                    ? (isSelectedSlot ? 0.98 : (selectedSlotID == nil ? 0.34 : 0.15))
+                                    ? (isSelectedSlot
+                                        ? 0.98
+                                        : (selectedSlotID == nil && selectedTrendIndex == nil
+                                            ? 0.34
+                                            : 0.15))
                                     : 0.58
                             ),
                             style: StrokeStyle(
@@ -1648,8 +1729,55 @@ private struct PositionPriceChart: View {
                     }
                     .stroke(
                         trendColor,
-                        style: StrokeStyle(lineWidth: 1.7, lineCap: .round, lineJoin: .round)
+                        style: StrokeStyle(
+                            lineWidth: selectedTrendIndex == nil ? 1.7 : 2.15,
+                            lineCap: .round,
+                            lineJoin: .round
+                        )
                     )
+
+                    if let selectedTrendIndex,
+                       trendValues.indices.contains(selectedTrendIndex)
+                    {
+                        let value = trendValues[selectedTrendIndex]
+                        let pointX = trendValues.count > 1
+                            ? proxy.size.width * CGFloat(selectedTrendIndex)
+                                / CGFloat(trendValues.count - 1)
+                            : proxy.size.width / 2
+                        let normalized = (value - minimum) / range
+                        let pointY = proxy.size.height * (1 - CGFloat(normalized))
+                        let labelX = min(max(pointX, 58), proxy.size.width - 58)
+                        let labelY = pointY < proxy.size.height / 2
+                            ? min(pointY + 19, proxy.size.height - 13)
+                            : max(pointY - 19, 13)
+
+                        Circle()
+                            .fill(Color.black)
+                            .frame(width: 9, height: 9)
+                            .overlay {
+                                Circle()
+                                    .stroke(trendColor, lineWidth: 2)
+                            }
+                            .shadow(color: trendColor.opacity(0.32), radius: 4)
+                            .position(x: pointX, y: pointY)
+                            .transition(.scale(scale: 0.55).combined(with: .opacity))
+                            .allowsHitTesting(false)
+
+                        Text("PRICE  \(trendPriceText(at: selectedTrendIndex))")
+                            .font(.system(size: 9, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(Color.white.opacity(0.92))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 4)
+                            .background(Color.black.opacity(0.84), in: Capsule())
+                            .overlay {
+                                Capsule()
+                                    .stroke(trendColor.opacity(0.38), lineWidth: 1)
+                            }
+                            .position(x: labelX, y: labelY)
+                            .transition(.scale(scale: 0.92).combined(with: .opacity))
+                            .allowsHitTesting(false)
+                    }
 
                     if trendValues.count < 2 {
                         Text("Collecting price history")
@@ -1687,14 +1815,19 @@ private struct PositionPriceChart: View {
                 .onContinuousHover { phase in
                     switch phase {
                     case let .active(location):
-                        selectNearestSlot(
-                            pointerY: location.y,
+                        selectNearestChartElement(
+                            pointer: location,
                             minimum: minimum,
                             maximum: maximum,
-                            height: proxy.size.height
+                            size: proxy.size
                         )
                     case .ended:
-                        if !showsSlotList { selectedSlotID = nil }
+                        if !showsSlotList {
+                            withAnimation(.easeOut(duration: 0.13)) {
+                                selectedTrendIndex = nil
+                                selectedSlotID = nil
+                            }
+                        }
                     }
                 }
             }
@@ -1704,6 +1837,11 @@ private struct PositionPriceChart: View {
                 self.selectedSlotID = nil
             }
             if ids.isEmpty { showsSlotList = false }
+        }
+        .onChange(of: points.count) { _, count in
+            if let selectedTrendIndex, selectedTrendIndex >= count {
+                self.selectedTrendIndex = nil
+            }
         }
     }
 }
@@ -1731,13 +1869,15 @@ private struct PositionPopupHost: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
-        coordinator.hide()
+        coordinator.hide(animated: false)
     }
 
     @MainActor
     final class Coordinator {
         private static let gap: CGFloat = 10
+        private static let dismissalDelay: TimeInterval = 0.28
         private let hostingView = NSHostingView(rootView: AnyView(EmptyView()))
+        private let presentation = PositionPopupPresentation()
         private var panel: PositionDetailPanel?
         private weak var parentWindow: NSWindow?
         private var localMouseMonitor: Any?
@@ -1745,6 +1885,8 @@ private struct PositionPopupHost: NSViewRepresentable {
         private var keyMonitor: Any?
         private var onDismiss: (() -> Void)?
         private var pendingPresentation = false
+        private var presentationGeneration = 0
+        private var isHiding = false
 
         func update(
             anchorView: NSView,
@@ -1759,7 +1901,9 @@ private struct PositionPopupHost: NSViewRepresentable {
                 return
             }
 
-            hostingView.rootView = content
+            hostingView.rootView = AnyView(
+                PositionPopupRevealSurface(content: content, presentation: presentation)
+            )
             guard let parentWindow = anchorView.window else {
                 guard !pendingPresentation else { return }
                 pendingPresentation = true
@@ -1779,17 +1923,40 @@ private struct PositionPopupHost: NSViewRepresentable {
             show(below: parentWindow)
         }
 
-        func hide() {
+        func hide(animated: Bool = true) {
             stopMonitoring()
-            if let panel, let parentWindow {
-                parentWindow.removeChildWindow(panel)
+            pendingPresentation = false
+            if animated, isHiding { return }
+            presentationGeneration += 1
+            let generation = presentationGeneration
+
+            guard animated, let panel, panel.isVisible else {
+                presentation.reveal = 0
+                finishHiding()
+                return
             }
-            panel?.orderOut(nil)
-            parentWindow = nil
+
+            isHiding = true
+            withAnimation(DashboardLayout.islandAnimation) {
+                presentation.reveal = 0
+            }
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + Self.dismissalDelay
+            ) { [weak self] in
+                guard let self, generation == self.presentationGeneration else { return }
+                self.finishHiding()
+            }
         }
 
         private func show(below parentWindow: NSWindow) {
             let panel = panel ?? makePanel()
+            presentationGeneration += 1
+            isHiding = false
+            let wasVisible = panel.isVisible
+            let shouldAnimate = !wasVisible || presentation.reveal < 1
+            if !wasVisible {
+                presentation.reveal = 0
+            }
             hostingView.layoutSubtreeIfNeeded()
             var contentSize = hostingView.fittingSize
             if contentSize.width < 1 || contentSize.height < 1 {
@@ -1821,6 +1988,26 @@ private struct PositionPopupHost: NSViewRepresentable {
             panel.setFrame(frame, display: true, animate: false)
             panel.orderFront(nil)
             startMonitoring(panel: panel, parentWindow: parentWindow)
+
+            if shouldAnimate {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, panel.isVisible else { return }
+                    withAnimation(DashboardLayout.islandAnimation) {
+                        self.presentation.reveal = 1
+                    }
+                }
+            } else {
+                presentation.reveal = 1
+            }
+        }
+
+        private func finishHiding() {
+            if let panel, let parentWindow {
+                parentWindow.removeChildWindow(panel)
+            }
+            panel?.orderOut(nil)
+            parentWindow = nil
+            isHiding = false
         }
 
         private func makePanel() -> PositionDetailPanel {
@@ -1894,6 +2081,32 @@ private struct PositionPopupHost: NSViewRepresentable {
                 stopMonitoring()
             }
         }
+    }
+}
+
+@MainActor
+private final class PositionPopupPresentation: ObservableObject {
+    @Published var reveal: CGFloat = 0
+}
+
+private struct PositionPopupRevealSurface: View {
+    let content: AnyView
+    @ObservedObject var presentation: PositionPopupPresentation
+
+    var body: some View {
+        content
+            // Match the island drawer: keep the fully rendered surface in
+            // place and reveal it downward from the shared top edge. A slight
+            // fade softens the leading edge without scaling the chart or text.
+            .mask(alignment: .top) {
+                Rectangle()
+                    .scaleEffect(
+                        x: 1,
+                        y: max(0.001, presentation.reveal),
+                        anchor: .top
+                    )
+            }
+            .opacity(0.74 + 0.26 * presentation.reveal)
     }
 }
 
