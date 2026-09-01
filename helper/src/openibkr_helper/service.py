@@ -13,6 +13,7 @@ from .database import Database
 from .events import (
     AdapterEvent,
     ConnectionEvent,
+    MarketDataStatusEvent,
     MarketDataTypeEvent,
     PositionCostSlotsEvent,
     PositionEvent,
@@ -62,6 +63,7 @@ class HelperService:
         self._started = False
         self._contract_candidates: dict[int, Instrument] = {}
         self._last_pnl_minute: str | None = None
+        self._market_data_override_active = False
 
     @property
     def uptime_seconds(self) -> int:
@@ -139,6 +141,20 @@ class HelperService:
 
     async def handle_market_data_event(self, event: AdapterEvent) -> None:
         await self.store.apply(event)
+        if not isinstance(event, MarketDataStatusEvent):
+            return
+
+        was_active = self._market_data_override_active
+        self._market_data_override_active = event.status.active
+        if not was_active or event.status.active:
+            return
+
+        # IB quote requests remain open while Alpaca owns the overnight UI,
+        # and their initial snapshots are intentionally ignored. At the 04:00
+        # ET handoff (or an Alpaca failure/clear), reissue the requests so IB
+        # sends a new market-data type plus a complete initial quote snapshot.
+        logger.info("market_data_handoff provider=ibkr action=refresh_subscriptions")
+        await self.subscriptions.refresh(self.database.list_watchlist())
 
     async def snapshot(self) -> AppSnapshot:
         return await self.store.snapshot()

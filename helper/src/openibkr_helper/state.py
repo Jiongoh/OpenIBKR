@@ -28,6 +28,7 @@ from .models import (
     ConnectionStatus,
     GatewayState,
     Instrument,
+    MarketDataKind,
     MarketDataStatus,
     PnLSnapshot,
     PositionSnapshot,
@@ -216,6 +217,7 @@ class SnapshotStore:
                         "ask": None,
                         "last": None,
                         "close": None,
+                        "market_data_kind": MarketDataKind.UNKNOWN,
                         "received_at": None,
                         "stale": True,
                     }

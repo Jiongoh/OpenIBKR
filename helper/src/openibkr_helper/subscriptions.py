@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .adapters.base import ReadOnlyDataAdapter
+from .events import QuoteResetEvent
 from .models import Instrument
 from .state import SnapshotStore
 
@@ -36,6 +37,15 @@ class SubscriptionManager:
 
     async def restore(self, instruments: list[Instrument]) -> None:
         for instrument in instruments:
+            await self.subscribe(instrument)
+
+    async def refresh(self, instruments: list[Instrument]) -> None:
+        """Reissue every desired quote request after a data-source handoff."""
+        for con_id in tuple(self._active):
+            await self._adapter.unsubscribe_quote(con_id)
+        self._active.clear()
+        for instrument in instruments:
+            await self._store.apply(QuoteResetEvent(instrument.con_id))
             await self.subscribe(instrument)
 
     async def stop(self) -> None:
