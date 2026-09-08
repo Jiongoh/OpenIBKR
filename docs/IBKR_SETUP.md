@@ -36,10 +36,8 @@ unused local port, provided Gateway and OpenIBKR use the same value.
 3. Keep the Gateway Read-Only API checkbox enabled at all times.
 4. Never add account credentials to environment files, source code, logs or the
    macOS application bundle.
-5. Treat market data entitlements as deployment-specific. Never assume that
-   real-time data is available; display the market-data type returned by IBKR.
-6. Do not enable regulatory snapshots; OpenIBKR hardcodes
-   `regulatorySnapshot=false`.
+5. IB Gateway is portfolio-only in OpenIBKR. All watchlist prices come from
+   Alpaca; the Helper's wire allowlist blocks IB market-data requests.
 
 ## Safe verification
 
@@ -50,10 +48,9 @@ Run automated protection tests before every live integration check:
 ```
 
 Then launch OpenIBKR with Gateway already running and confirm that Settings
-shows a connected, read-only IBKR source. Verify that account identifiers stay
-masked and that unavailable or delayed market data is labelled accurately.
+shows a connected, portfolio-only IBKR source. Verify that account identifiers
+stay masked and that Alpaca market-data status is shown separately.
 
 For reconnect verification, manually exit and reopen IB Gateway on the same
 port. OpenIBKR should enter a recoverable disconnected state, reconnect, and
-restore account/P&L and market-data subscriptions without restarting Gateway
-itself.
+restore account, positions, and P&L subscriptions without restarting Gateway.

@@ -31,14 +31,11 @@ class StubMarketData:
     async def unsubscribe(self, con_id: int) -> None:
         pass
 
-    def should_override_quotes(self) -> bool:
-        return False
-
     def status(self) -> MarketDataStatus:
         return self._status
 
     async def configure(self, credentials) -> MarketDataStatus:  # noqa: ANN001
-        self._status = MarketDataStatus(provider="alpaca_overnight", configured=True, active=True)
+        self._status = MarketDataStatus(provider="alpaca", configured=True, active=True)
         return self._status
 
     async def clear(self) -> MarketDataStatus:
@@ -117,7 +114,7 @@ class HelperAPITests(unittest.TestCase):
         self.assertEqual(configured.status_code, 200)
         self.assertTrue(configured.json()["configured"])
         status = self.client.get("/v1/market-data/status", headers=self.headers)
-        self.assertEqual(status.json()["provider"], "alpaca_overnight")
+        self.assertEqual(status.json()["provider"], "alpaca")
         cleared = self.client.delete("/v1/market-data/alpaca/credentials", headers=self.headers)
         self.assertFalse(cleared.json()["configured"])
 

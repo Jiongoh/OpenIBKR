@@ -94,6 +94,9 @@ class FakeIBKRAdapter:
         )
         self._tasks[instrument.con_id] = task
 
+    async def subscribe_watchlist(self, instrument: Instrument) -> None:
+        await self.subscribe_quote(instrument)
+
     async def unsubscribe_quote(self, con_id: int) -> None:
         task = self._tasks.pop(con_id, None)
         if task is None:
@@ -101,6 +104,9 @@ class FakeIBKRAdapter:
         self.unsubscribe_calls.append(con_id)
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+    async def unsubscribe_watchlist(self, con_id: int) -> None:
+        await self.unsubscribe_quote(con_id)
 
     async def _quote_loop(self, instrument: Instrument) -> None:
         assert self._sink is not None

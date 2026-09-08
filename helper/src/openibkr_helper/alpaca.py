@@ -1,4 +1,4 @@
-"""Read-only Alpaca overnight market-data client.
+"""Read-only Alpaca all-session market-data client.
 
 This module deliberately exposes only two fixed market-data endpoints.  It has
 no account, position, order, or trading capability.
@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable, Mapping
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
@@ -30,6 +30,12 @@ from .models import (
 ALPACA_DATA_ORIGIN = "https://data.alpaca.markets"
 ALLOWED_ALPACA_PATHS = frozenset({"/v2/stocks/snapshots", "/v2/stocks/bars"})
 OVERNIGHT_TIME_ZONE = ZoneInfo("America/New_York")
+# Free-plan overnight trades can themselves be delayed by 15 minutes.  Allow a
+# small margin beyond that, while still rejecting snapshots stranded on a prior
+# session (for example, a symbol carrying Alpaca's ``overnight_halted`` flag).
+OVERNIGHT_SNAPSHOT_MAX_AGE = timedelta(minutes=20)
+STANDARD_HISTORY_WINDOW = timedelta(hours=24)
+EXPANDED_HISTORY_WINDOWS = (timedelta(days=7), timedelta(days=31))
 
 MarketEventSink = Callable[
     [MarketDataStatusEvent | MarketDataTypeEvent | QuoteEvent | QuoteTrendEvent],
@@ -138,7 +144,7 @@ def is_overnight_session(now: datetime | None = None) -> bool:
 
 
 class AlpacaOvernightProvider:
-    """Polls official overnight snapshots and delayed BOATS minute bars."""
+    """Polls Alpaca snapshots all day, using the dedicated overnight feed at night."""
 
     poll_seconds = 15.0
     history_refresh_seconds = 60.0
@@ -156,30 +162,18 @@ class AlpacaOvernightProvider:
         self._last_status: MarketDataStatus | None = None
         self._has_fresh_data = False
         self._trends: dict[int, tuple[QuoteTrendPoint, ...]] = {}
+        self._snapshot_feeds: dict[int, str] = {}
 
     @property
     def configured(self) -> bool:
         return self._credentials is not None
 
-    def should_override_quotes(self, now: datetime | None = None) -> bool:
-        return (
-            self.configured
-            and self._has_fresh_data
-            and self._last_error is None
-            and is_overnight_session(now)
-        )
-
     def status(self, now: datetime | None = None) -> MarketDataStatus:
         configured = self.configured
         return MarketDataStatus(
-            provider="alpaca_overnight" if configured else "ibkr",
+            provider="alpaca",
             configured=configured,
-            active=(
-                configured
-                and self._has_fresh_data
-                and self._last_error is None
-                and is_overnight_session(now)
-            ),
+            active=(configured and self._has_fresh_data and self._last_error is None),
             last_update_at=self._last_update_at,
             error=self._last_error,
         )
@@ -195,6 +189,7 @@ class AlpacaOvernightProvider:
             await asyncio.gather(task, return_exceptions=True)
         self._credentials = None
         self._has_fresh_data = False
+        self._snapshot_feeds.clear()
 
     async def configure(self, credentials: AlpacaCredentials) -> MarketDataStatus:
         self._credentials = credentials
@@ -202,23 +197,25 @@ class AlpacaOvernightProvider:
         self._has_fresh_data = False
         self._last_history_refresh = None
         self._last_update_at = None
-        if is_overnight_session() and self._instruments:
+        self._snapshot_feeds.clear()
+        if self._instruments:
             try:
                 await self._refresh()
             except AlpacaMarketDataError as exc:
                 self._last_error = str(exc)
         if self._task is None or self._task.done():
-            self._task = asyncio.create_task(self._run(), name="openibkr-alpaca-overnight")
+            self._task = asyncio.create_task(self._run(), name="openibkr-alpaca-market-data")
         self._wake.set()
         await self._publish_status(force=True)
         return self.status()
 
     async def clear(self) -> MarketDataStatus:
         self._credentials = None
-        self._has_fresh_data = False
         self._last_error = None
         self._last_update_at = None
         self._trends.clear()
+        self._snapshot_feeds.clear()
+        self._has_fresh_data = False
         self._wake.set()
         await self._publish_status(force=True)
         return self.status()
@@ -231,6 +228,7 @@ class AlpacaOvernightProvider:
     async def unsubscribe(self, con_id: int) -> None:
         self._instruments.pop(con_id, None)
         self._trends.pop(con_id, None)
+        self._snapshot_feeds.pop(con_id, None)
         self._last_history_refresh = None
         self._wake.set()
 
@@ -241,27 +239,29 @@ class AlpacaOvernightProvider:
                 if self._credentials is None or not self._instruments:
                     await self._wait(30.0)
                     continue
-                if not is_overnight_session():
-                    self._has_fresh_data = False
-                    await self._publish_status()
-                    await self._wait(30.0)
-                    continue
                 await self._refresh()
                 await self._wait(self.poll_seconds)
             except asyncio.CancelledError:
                 raise
             except AlpacaMarketDataError as exc:
                 self._last_error = str(exc)
+                self._has_fresh_data = False
                 await self._publish_status(force=True)
                 await self._wait(self.poll_seconds)
             except Exception:
                 self._last_error = "Alpaca market-data update failed"
+                self._has_fresh_data = False
                 await self._publish_status(force=True)
                 await self._wait(self.poll_seconds)
 
     async def _expire_trends(self, now: datetime) -> None:
-        cutoff = now - timedelta(hours=24)
         for con_id, points in list(self._trends.items()):
+            retention = (
+                EXPANDED_HISTORY_WINDOWS[-1]
+                if self._snapshot_feeds.get(con_id) in {"delayed_sip", "iex"}
+                else STANDARD_HISTORY_WINDOW
+            )
+            cutoff = now - retention
             retained = tuple(point for point in points if cutoff <= point.sampled_at <= now)
             if retained == points:
                 continue
@@ -281,6 +281,11 @@ class AlpacaOvernightProvider:
         if credentials is None:
             return
         now = utc_now()
+        updated = await self._refresh_snapshots(credentials, now)
+        self._has_fresh_data = updated
+        self._last_error = None
+        if updated:
+            self._last_update_at = now
         if (
             self._last_history_refresh is None
             or (now - self._last_history_refresh).total_seconds() >= self.history_refresh_seconds
@@ -288,28 +293,55 @@ class AlpacaOvernightProvider:
             try:
                 await self._refresh_history(credentials, now)
             except (AlpacaAuthenticationError, AlpacaEntitlementError):
-                # Historical BOATS access varies by subscription. It is optional:
-                # a rejected history request must not block the live overnight snapshot.
+                # Historical feed access varies by subscription. It is optional:
+                # a rejected history request must not block the current snapshot.
                 pass
             except AlpacaMarketDataError:
-                # A missing or temporarily unavailable history entitlement must not
-                # prevent the current indicative overnight quote from updating.
+                # Missing or temporarily unavailable history must not prevent the
+                # current quote from updating.
                 pass
             self._last_history_refresh = now
-        updated = await self._refresh_snapshots(credentials, now)
-        if updated:
-            self._has_fresh_data = True
-            self._last_update_at = now
-            self._last_error = None
-            await self._publish_status(force=True)
+        await self._publish_status(force=updated)
 
     async def _refresh_history(self, credentials: AlpacaCredentials, now: datetime) -> None:
-        symbols = self._symbol_list()
-        if not symbols:
-            return
-        end = now - timedelta(minutes=15)
-        start = now - timedelta(hours=24)
         for con_id, instrument in self._instruments.items():
+            snapshot_feed = self._snapshot_feeds.get(con_id)
+            if snapshot_feed is None:
+                snapshot_feed = "overnight" if is_overnight_session(now) else "delayed_sip"
+            history_feed = {
+                "overnight": "boats",
+                "delayed_sip": "sip",
+                "iex": "iex",
+            }[snapshot_feed]
+            points = await self._history_points_for_instrument(
+                credentials,
+                instrument,
+                history_feed=history_feed,
+                expand=snapshot_feed != "overnight",
+                now=now,
+            )
+            if points:
+                merged = _merge_trend_points(points, self._trends.get(con_id, ()))
+                self._trends[con_id] = merged
+                await self._emit(QuoteTrendEvent(con_id, merged))
+
+    async def _history_points_for_instrument(
+        self,
+        credentials: AlpacaCredentials,
+        instrument: Instrument,
+        *,
+        history_feed: str,
+        expand: bool,
+        now: datetime,
+    ) -> tuple[QuoteTrendPoint, ...]:
+        end = now if history_feed == "iex" else now - timedelta(minutes=15)
+        windows = (STANDARD_HISTORY_WINDOW,)
+        if expand:
+            windows += EXPANDED_HISTORY_WINDOWS
+
+        latest_points: tuple[QuoteTrendPoint, ...] = ()
+        for window in windows:
+            start = end - window
             try:
                 payload = await self._transport.get_json(
                     "/v2/stocks/bars",
@@ -318,26 +350,26 @@ class AlpacaOvernightProvider:
                         "timeframe": "1Min",
                         "start": _api_time(start),
                         "end": _api_time(end),
-                        "feed": "boats",
+                        "feed": history_feed,
                         "adjustment": "raw",
                         "limit": "10000",
-                        "sort": "asc",
+                        "sort": "desc",
                     },
                     credentials,
                 )
             except (AlpacaAuthenticationError, AlpacaEntitlementError):
-                # Authentication is validated authoritatively by the required snapshot
-                # request. BOATS history is an optional enhancement and may use a
-                # different entitlement.
-                continue
+                return ()
             except AlpacaMarketDataError:
-                continue
+                return latest_points
+
             bars_by_symbol = payload.get("bars", {}) if isinstance(payload, dict) else {}
             raw_bars = bars_by_symbol.get(instrument.symbol, [])
             points = _trend_points(raw_bars, start=start, end=end)
+            if len(points) >= 2:
+                return points if window == STANDARD_HISTORY_WINDOW else _latest_trading_day(points)
             if points:
-                self._trends[con_id] = points
-                await self._emit(QuoteTrendEvent(con_id, points))
+                latest_points = points
+        return latest_points
 
     async def _refresh_snapshots(
         self,
@@ -347,42 +379,102 @@ class AlpacaOvernightProvider:
         symbols = self._symbol_list()
         if not symbols:
             return False
-        payload = await self._transport.get_json(
-            "/v2/stocks/snapshots",
-            {"symbols": ",".join(symbols), "feed": "overnight"},
-            credentials,
-        )
-        # A successful snapshot response proves that authentication and the required
-        # overnight feed are available, even when none of the requested symbols has a
-        # usable quote in this particular response.
+        overnight = is_overnight_session(now)
+        # Basic accounts have full-market delayed SIP data throughout the regular
+        # and extended sessions.  At night, keep Alpaca's indicative feed for
+        # eligible symbols, but resolve missing/stale symbols independently so one
+        # overnight halt cannot blank the entire watchlist.
+        feed_order = ("overnight", "delayed_sip", "iex") if overnight else ("delayed_sip", "iex")
+        unresolved = set(symbols)
+        selected: dict[str, tuple[Mapping[str, Any], str]] = {}
+        errors: list[AlpacaMarketDataError] = []
+
+        for feed in feed_order:
+            if not unresolved:
+                break
+            requested = tuple(sorted(unresolved))
+            try:
+                snapshots = await self._fetch_snapshots(
+                    credentials,
+                    requested,
+                    feed,
+                )
+            except AlpacaAuthenticationError:
+                raise
+            except AlpacaMarketDataError as exc:
+                errors.append(exc)
+                continue
+
+            for symbol in requested:
+                raw = snapshots.get(symbol)
+                if not isinstance(raw, Mapping):
+                    continue
+                price, _observed_at, _bid, _ask = _snapshot_price(raw, now)
+                if price is None:
+                    continue
+                if feed == "overnight" and not _snapshot_is_recent_overnight(raw, now):
+                    continue
+                selected[symbol] = (raw, feed)
+                unresolved.discard(symbol)
+
+        if not selected:
+            # Preserve a useful transport/entitlement error when every attempted
+            # fallback failed. A wholly successful empty response is a valid
+            # no-data poll, but a partial outage should remain visible.
+            if errors:
+                raise errors[-1]
+            return False
+
         self._last_error = None
-        if not isinstance(payload, dict):
-            return False
-        snapshots = payload.get("snapshots", payload)
-        if not isinstance(snapshots, dict):
-            return False
         updated = False
         for con_id, instrument in self._instruments.items():
-            raw = snapshots.get(instrument.symbol)
-            if not isinstance(raw, dict):
+            resolved = selected.get(instrument.symbol)
+            if resolved is None:
                 continue
+            raw, feed = resolved
+            self._snapshot_feeds[con_id] = feed
             price, observed_at, bid, ask = _snapshot_price(raw, now)
             if price is None:
                 continue
-            await self._emit(MarketDataTypeEvent(con_id, MarketDataKind.OVERNIGHT_INDICATIVE))
+            kind = (
+                MarketDataKind.OVERNIGHT_INDICATIVE
+                if feed == "overnight"
+                else MarketDataKind.DELAYED
+                if feed == "delayed_sip"
+                else MarketDataKind.REAL_TIME
+            )
+            await self._emit(MarketDataTypeEvent(con_id, kind))
+            # QuoteSnapshot.received_at drives connection freshness.  The actual
+            # exchange timestamp remains attached to the trend point below.
             if bid is not None:
-                await self._emit(QuoteEvent(con_id, "bid", bid, observed_at))
+                await self._emit(QuoteEvent(con_id, "bid", bid, now))
             if ask is not None:
-                await self._emit(QuoteEvent(con_id, "ask", ask, observed_at))
-            await self._emit(QuoteEvent(con_id, "last", price, observed_at))
+                await self._emit(QuoteEvent(con_id, "ask", ask, now))
+            await self._emit(QuoteEvent(con_id, "last", price, now))
             close = _decimal_from_mapping(raw.get("prevDailyBar"), "c")
             if close is not None:
-                await self._emit(QuoteEvent(con_id, "close", close, observed_at))
+                await self._emit(QuoteEvent(con_id, "close", close, now))
             trend = _record_trend(price, observed_at, self._trends.get(con_id, ()))
             self._trends[con_id] = trend
             await self._emit(QuoteTrendEvent(con_id, trend))
             updated = True
         return updated
+
+    async def _fetch_snapshots(
+        self,
+        credentials: AlpacaCredentials,
+        symbols: tuple[str, ...],
+        feed: str,
+    ) -> Mapping[str, Any]:
+        payload = await self._transport.get_json(
+            "/v2/stocks/snapshots",
+            {"symbols": ",".join(symbols), "feed": feed},
+            credentials,
+        )
+        if not isinstance(payload, Mapping):
+            return {}
+        snapshots = payload.get("snapshots", payload)
+        return snapshots if isinstance(snapshots, Mapping) else {}
 
     def _symbol_list(self) -> tuple[str, ...]:
         return tuple(sorted({item.symbol for item in self._instruments.values()}))
@@ -447,6 +539,33 @@ def _snapshot_price(
     return None, fallback_time, bid, ask
 
 
+def _snapshot_is_recent_overnight(
+    snapshot: Mapping[str, Any],
+    now: datetime,
+) -> bool:
+    """Return whether the price chosen from an overnight snapshot is current."""
+
+    quote = snapshot.get("latestQuote")
+    if (
+        _decimal_from_mapping(quote, "bp") is not None
+        and _decimal_from_mapping(quote, "ap") is not None
+    ):
+        timestamp = quote.get("t") if isinstance(quote, Mapping) else None
+    else:
+        trade = snapshot.get("latestTrade")
+        if _decimal_from_mapping(trade, "p") is not None:
+            timestamp = trade.get("t") if isinstance(trade, Mapping) else None
+        else:
+            bar = snapshot.get("minuteBar")
+            timestamp = bar.get("t") if isinstance(bar, Mapping) else None
+
+    if not isinstance(timestamp, str):
+        return False
+    observed_at = _parse_time(timestamp, now - OVERNIGHT_SNAPSHOT_MAX_AGE * 2)
+    age = now.astimezone(UTC) - observed_at
+    return -timedelta(minutes=1) <= age <= OVERNIGHT_SNAPSHOT_MAX_AGE
+
+
 def _trend_points(
     bars: Any,
     *,
@@ -455,7 +574,7 @@ def _trend_points(
 ) -> tuple[QuoteTrendPoint, ...]:
     if not isinstance(bars, list):
         return ()
-    points: list[QuoteTrendPoint] = []
+    parsed_points: list[QuoteTrendPoint] = []
     for bar in bars:
         if not isinstance(bar, Mapping):
             continue
@@ -463,12 +582,49 @@ def _trend_points(
         sampled_at = _parse_time(bar.get("t"), end)
         if price is None or sampled_at < start or sampled_at > end:
             continue
-        point = QuoteTrendPoint(sampled_at=sampled_at, price=price)
-        if points and points[-1].sampled_at == point.sampled_at:
-            points[-1] = point
-        elif not points or points[-1].price != point.price:
-            points.append(point)
-    return tuple(points[-1440:])
+        parsed_points.append(QuoteTrendPoint(sampled_at=sampled_at, price=price))
+    return _normalized_trend_points(parsed_points)
+
+
+def _normalized_trend_points(
+    points: list[QuoteTrendPoint] | tuple[QuoteTrendPoint, ...],
+) -> tuple[QuoteTrendPoint, ...]:
+    by_time = {point.sampled_at: point for point in points}
+    ordered = sorted(by_time.values(), key=lambda point: point.sampled_at)
+    compressed: list[QuoteTrendPoint] = []
+    for point in ordered:
+        if not compressed or compressed[-1].price != point.price:
+            compressed.append(point)
+    # A completely flat but actively traded session still needs two endpoints
+    # for Swift Charts to draw its horizontal line.
+    if len(compressed) == 1 and len(ordered) >= 2:
+        compressed.append(ordered[-1])
+    return tuple(compressed[-1440:])
+
+
+def _latest_trading_day(
+    points: tuple[QuoteTrendPoint, ...],
+) -> tuple[QuoteTrendPoint, ...]:
+    by_day: dict[date, list[QuoteTrendPoint]] = {}
+    for point in points:
+        trading_day = point.sampled_at.astimezone(OVERNIGHT_TIME_ZONE).date()
+        by_day.setdefault(trading_day, []).append(point)
+    for trading_day in sorted(by_day, reverse=True):
+        day_points = _normalized_trend_points(by_day[trading_day])
+        if len(day_points) >= 2:
+            return day_points
+    return _normalized_trend_points(points)
+
+
+def _merge_trend_points(
+    history: tuple[QuoteTrendPoint, ...],
+    current: tuple[QuoteTrendPoint, ...],
+) -> tuple[QuoteTrendPoint, ...]:
+    if not history:
+        return current
+    earliest = history[0].sampled_at
+    relevant_current = tuple(point for point in current if point.sampled_at >= earliest)
+    return _normalized_trend_points(history + relevant_current)
 
 
 def _record_trend(

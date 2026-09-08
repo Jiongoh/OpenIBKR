@@ -1,9 +1,8 @@
-"""Idempotent dynamic quote subscription management."""
+"""Idempotent IB portfolio subscription management for watchlist symbols."""
 
 from __future__ import annotations
 
 from .adapters.base import ReadOnlyDataAdapter
-from .events import QuoteResetEvent
 from .models import Instrument
 from .state import SnapshotStore
 
@@ -22,7 +21,7 @@ class SubscriptionManager:
         await self._store.ensure_instrument(instrument)
         if instrument.con_id in self._active:
             return False
-        await self._adapter.subscribe_quote(instrument)
+        await self._adapter.subscribe_watchlist(instrument)
         self._active.add(instrument.con_id)
         return True
 
@@ -30,7 +29,7 @@ class SubscriptionManager:
         if con_id not in self._active:
             await self._store.remove_instrument(con_id)
             return False
-        await self._adapter.unsubscribe_quote(con_id)
+        await self._adapter.unsubscribe_watchlist(con_id)
         self._active.remove(con_id)
         await self._store.remove_instrument(con_id)
         return True
@@ -39,16 +38,7 @@ class SubscriptionManager:
         for instrument in instruments:
             await self.subscribe(instrument)
 
-    async def refresh(self, instruments: list[Instrument]) -> None:
-        """Reissue every desired quote request after a data-source handoff."""
-        for con_id in tuple(self._active):
-            await self._adapter.unsubscribe_quote(con_id)
-        self._active.clear()
-        for instrument in instruments:
-            await self._store.apply(QuoteResetEvent(instrument.con_id))
-            await self.subscribe(instrument)
-
     async def stop(self) -> None:
         for con_id in tuple(self._active):
-            await self._adapter.unsubscribe_quote(con_id)
+            await self._adapter.unsubscribe_watchlist(con_id)
         self._active.clear()

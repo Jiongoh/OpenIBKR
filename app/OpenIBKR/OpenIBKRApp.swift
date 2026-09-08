@@ -204,14 +204,14 @@ private struct SettingsView: View {
             } header: {
                 SettingsSectionHeader(
                     title: "IB Gateway",
-                    subtitle: "Read-only account and market-data connection",
+                    subtitle: "Read-only account, positions, and P&L connection",
                     systemImage: "server.rack"
                 )
             }
 
             Section {
-                Picker("Data Source", selection: $helperAdapter) {
-                    Text("IB Gateway (Read-Only)").tag("ibkr")
+                Picker("Portfolio Source", selection: $helperAdapter) {
+                    Text("IB Gateway (Portfolio Only)").tag("ibkr")
                     Text("Fake Data (Development)").tag("fake")
                 }
                 .pickerStyle(.menu)
@@ -226,7 +226,7 @@ private struct SettingsView: View {
                 Text("Connection")
             } footer: {
                 Label(
-                    "Changes to the data source or port take effect after OpenIBKR restarts.",
+                    "Changes to the portfolio source or port take effect after OpenIBKR restarts.",
                     systemImage: "arrow.clockwise"
                 )
             }
@@ -258,9 +258,9 @@ private struct SettingsView: View {
                 }
             } header: {
                 SettingsSectionHeader(
-                    title: "Alpaca Overnight",
-                    subtitle: "Indicative U.S. quotes from 20:00–04:00 ET",
-                    systemImage: "moon.stars.fill"
+                    title: "Alpaca Market Data",
+                    subtitle: "All-session U.S. prices and charts",
+                    systemImage: "chart.xyaxis.line"
                 )
             }
 

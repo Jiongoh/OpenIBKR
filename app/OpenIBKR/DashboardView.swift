@@ -543,31 +543,63 @@ private struct DynamicIslandView: View {
     }
 
     private var dailyPnL: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text("TODAY'S P&L")
-                .font(.system(size: 10, weight: .medium, design: .rounded))
-                .tracking(1.1)
-                .foregroundStyle(Color.white.opacity(0.48))
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 7) {
+                Text("TODAY'S P&L")
+                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                    .tracking(1.1)
+                    .foregroundStyle(Color.white.opacity(0.48))
 
-            Text(
-                dailyPnLAmountText(
-                    model.snapshot.pnl.daily,
-                    currency: model.snapshot.account.currency
+                Text(
+                    dailyPnLAmountText(
+                        model.snapshot.pnl.daily,
+                        currency: model.snapshot.account.currency
+                    )
                 )
-            )
-            .font(.system(size: 25, weight: .semibold, design: .rounded))
-            .monospacedDigit()
-            .lineLimit(1)
-            .minimumScaleFactor(0.62)
-            .allowsTightening(true)
-            .foregroundStyle(pnlDirectionColor(model.snapshot.pnl.daily))
-
-            Text(dailyPnLPercentText(model.snapshot.dailyPnLPercent))
-                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .font(.system(size: 25, weight: .semibold, design: .rounded))
                 .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.62)
+                .allowsTightening(true)
                 .foregroundStyle(pnlDirectionColor(model.snapshot.pnl.daily))
+
+                Text(dailyPnLPercentText(model.snapshot.dailyPnLPercent))
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(pnlDirectionColor(model.snapshot.pnl.daily))
+            }
+
+            Spacer(minLength: 8)
+
+            HStack(spacing: 18) {
+                pnlBreakdownMetric(
+                    title: "UNREALIZED",
+                    value: model.snapshot.pnl.unrealized
+                )
+                pnlBreakdownMetric(
+                    title: "REALIZED",
+                    value: model.snapshot.pnl.realized
+                )
+            }
         }
-        .frame(maxHeight: .infinity, alignment: .center)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func pnlBreakdownMetric(title: String, value: DecimalString?) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.system(size: 8, weight: .medium, design: .rounded))
+                .tracking(0.7)
+                .foregroundStyle(Color.white.opacity(0.34))
+
+            Text(dailyPnLAmountText(value, currency: model.snapshot.account.currency))
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+                .foregroundStyle(pnlDirectionColor(value))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var watchlist: some View {
@@ -617,6 +649,37 @@ private struct DynamicIslandView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .allowsHitTesting(false)
         }
+    }
+
+    private func marketDataFeedHint(for quote: QuoteSnapshot) -> some View {
+        let hasMarketData = quote.displayPrice != nil && quote.marketDataKind != .unknown
+
+        return HStack(spacing: 4) {
+            Circle()
+                .fill(
+                    hasMarketData
+                        ? Color(red: 0.48, green: 0.74, blue: 1.0)
+                        : Color.white.opacity(0.28)
+                )
+                .frame(width: 4, height: 4)
+                .shadow(
+                    color: hasMarketData
+                        ? Color(red: 0.48, green: 0.74, blue: 1.0).opacity(0.72)
+                        : .clear,
+                    radius: 2.5
+                )
+
+            Text(quote.marketDataKind.compactFeedName)
+                .font(.system(size: 8, weight: .medium, design: .rounded))
+                .tracking(0.35)
+                .lineLimit(1)
+        }
+        .foregroundStyle(Color.white.opacity(hasMarketData ? 0.38 : 0.24))
+        .animation(.easeInOut(duration: 0.18), value: hasMarketData)
+        .animation(.easeInOut(duration: 0.18), value: quote.marketDataKind)
+        .help("Market data: \(quote.marketDataKind.displayName)")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Market data: \(quote.marketDataKind.displayName)")
     }
 
     private var watchlistPositionIndicator: some View {
@@ -702,6 +765,10 @@ private struct DynamicIslandView: View {
                     .font(.system(size: 10, weight: .medium, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(quoteDailyChangeColor(quote))
+
+                marketDataFeedHint(for: quote)
+                    .id("\(quote.id)-\(quote.marketDataKind.rawValue)")
+                    .transition(.opacity.combined(with: .offset(y: -2)))
             }
             .frame(width: 112, alignment: .leading)
 

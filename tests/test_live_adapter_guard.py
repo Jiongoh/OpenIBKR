@@ -14,7 +14,7 @@ from openibkr_helper.adapters.live import (
     _rebuild_cost_slots,
 )
 from openibkr_helper.config import HelperSettings
-from openibkr_helper.events import PositionPnLEvent, QuoteEvent
+from openibkr_helper.events import PositionPnLEvent
 from openibkr_helper.readonly_client import ReadOnlyIBKRClient, TradingDisabledError
 
 
@@ -33,9 +33,7 @@ class LiveAdapterGuardTests(unittest.TestCase):
             _ExecutionFill("b", 265598, "SLD", Decimal("5"), Decimal("110"), "2", "8"),
         )
 
-        slots = _rebuild_cost_slots(
-            265598, Decimal("5"), Decimal("100"), fills
-        )
+        slots = _rebuild_cost_slots(265598, Decimal("5"), Decimal("100"), fills)
 
         self.assertEqual(len(slots), 1)
         self.assertEqual(slots[0].source, "execution")
@@ -43,13 +41,9 @@ class LiveAdapterGuardTests(unittest.TestCase):
         self.assertEqual(slots[0].price, Decimal("100"))
 
     def test_cost_slots_derive_pre_today_base_without_faking_execution_prices(self) -> None:
-        fills = (
-            _ExecutionFill("a", 265598, "BOT", Decimal("2"), Decimal("120"), "1", "9"),
-        )
+        fills = (_ExecutionFill("a", 265598, "BOT", Decimal("2"), Decimal("120"), "1", "9"),)
 
-        slots = _rebuild_cost_slots(
-            265598, Decimal("12"), Decimal("105"), fills
-        )
+        slots = _rebuild_cost_slots(265598, Decimal("12"), Decimal("105"), fills)
 
         self.assertEqual([slot.source for slot in slots], ["historical_base", "execution"])
         self.assertEqual(slots[0].quantity, Decimal("10"))
@@ -131,7 +125,7 @@ class LiveAdapterGuardTests(unittest.TestCase):
             client.error(8001, 0, 321, "validation error")
             adapter.reject_contract_from_thread.assert_called_once_with(8001, 321)
 
-    def test_zero_and_negative_price_ticks_are_ignored(self) -> None:
+    def test_ib_market_data_requests_are_not_exposed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             settings = HelperSettings(
                 session_token="price-filter-test-token-at-least-32-characters",
@@ -139,18 +133,9 @@ class LiveAdapterGuardTests(unittest.TestCase):
                 adapter="ibkr",
             )
             adapter = LiveIBKRAdapter(settings)
-            adapter.emit_from_thread = Mock()
             client = _HelperIBKRClient(adapter)
-            client.market_requests[17] = 270639
-
-            client.tickPrice(17, 68, 0.0, Mock())
-            client.tickPrice(17, 68, -1.0, Mock())
-            adapter.emit_from_thread.assert_not_called()
-
-            client.tickPrice(17, 68, 98.75, Mock())
-            adapter.emit_from_thread.assert_called_once_with(
-                QuoteEvent(270639, "last", Decimal("98.75"))
-            )
+            self.assertNotIn("subscribe_quote", dir(adapter))
+            self.assertNotIn("market_requests", vars(client))
 
     def test_single_position_pnl_is_mapped_without_account_identifier(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

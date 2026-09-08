@@ -1,7 +1,7 @@
 """Fail-closed IBKR client used by the local helper.
 
 This module is not a trading client. It permits only the outgoing TWS message
-types needed to read account/P&L/position, executions, and top-of-book market data. Every
+types needed to read account/P&L/positions and executions. Every
 other outgoing message ID is rejected before it reaches the socket.
 """
 
@@ -43,9 +43,6 @@ ALLOWED_OUTGOING: Final[frozenset[OUT]] = frozenset(
         OUT.REQ_EXECUTIONS,
         OUT.REQ_CONTRACT_DATA,
         OUT.CANCEL_CONTRACT_DATA,
-        OUT.REQ_MARKET_DATA_TYPE,
-        OUT.REQ_MKT_DATA,
-        OUT.CANCEL_MKT_DATA,
     }
 )
 

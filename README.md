@@ -23,8 +23,7 @@ demo is hosted as a GitHub Release asset and is not included in source checkouts
 - Expands the P&L card on hover while keeping its top-left position stable.
 - Displays a collapsible watchlist with price, absolute change and percentage
   change.
-- Can optionally use Alpaca's official overnight market-data feed for indicative
-  quotes and compact 24-hour trend lines.
+- Uses Alpaca for all-session prices and compact 24-hour trend lines.
 - Uses compact inactive rows and expands individual quotes on hover.
 - Adds and removes US stock symbols without restarting the app.
 - Reports invalid or ambiguous symbols instead of creating zero-price rows.
@@ -33,9 +32,8 @@ demo is hosted as a GitHub Release asset and is not included in source checkouts
   window space does not block other apps.
 - Owns and restarts its bundled local Helper process and can launch at login.
 
-The interface is built with SwiftUI and AppKit for Apple Silicon Macs. Account
-and market data are supplied by a bundled Python Helper that communicates with
-IB Gateway through the official TWS API.
+The interface is built with SwiftUI and AppKit for Apple Silicon Macs. A bundled
+Python Helper reads portfolio data from IB Gateway and market prices from Alpaca.
 
 ## Read-only safety model
 
@@ -49,7 +47,7 @@ OpenIBKR does **not** implement trading.
 - The Helper API uses a random local port and a one-time token that remains only
   in process memory.
 - The full account ID, IBKR credentials and 2FA material are never persisted.
-- Optional Alpaca Paper API credentials are stored only in the user's macOS
+- Alpaca Paper API credentials are stored only in the user's macOS
   Keychain and passed to the Helper over its authenticated loopback channel.
 - Alpaca integration is hard-limited to two `GET` market-data routes on
   `data.alpaca.markets`; no trading, order, position or account route exists.
@@ -66,7 +64,7 @@ These application safeguards are defense in depth. IB Gateway's own
 - IB Gateway 10.49
 - Official TWS API 10.49.02 / `ibapi` 10.49.2
 - An IBKR username permitted to view the intended account
-- Appropriate IBKR market-data entitlements for real-time quotes, if required
+- Alpaca market-data access for watchlist prices
 
 The TWS API is separately licensed by Interactive Brokers. It is not included
 in this repository and must not be copied into a fork or release artifact.
@@ -110,24 +108,21 @@ notarization as described in the [release guide](docs/RELEASE.md).
 OpenIBKR defaults to the read-only Gateway adapter on port `4003`. Its Settings
 window also provides a deterministic Fake data source for UI development.
 
-## Optional Alpaca overnight quotes
+## Alpaca market data
 
-IBKR remains the source for account NAV and P&L. If an Alpaca Paper API key is
-configured, OpenIBKR uses Alpaca only for watchlist quotes during the U.S.
-overnight session (20:00–04:00 America/New_York, Sunday evening through Friday
-morning):
+IB Gateway is used only for account, positions, costs, and P&L. OpenIBKR uses
+Alpaca for every watchlist price and chart throughout the day:
 
 1. Open the OpenIBKR menu-bar item and choose **Settings…**.
-2. Under **Alpaca Overnight Market Data**, enter the Paper API Key ID and Secret
+2. Under **Alpaca Market Data**, enter the Paper API Key ID and Secret
    Key, then choose **Save & Connect**.
-3. Confirm that the status reads **Alpaca Overnight · Active** during the
-   overnight session, or **Standby** outside it.
+3. Confirm that the status reads **Alpaca · Active**.
 
 Never put API keys in project files, terminal commands, screenshots, issues or
 Git commits. OpenIBKR stores them as device-local Keychain items and restores
-the market-data connection when its local Helper restarts. The displayed
-overnight price is an indicative bid/ask midpoint and may differ from an
-executable broker quote.
+the market-data connection when its local Helper restarts. During the U.S.
+overnight session, the displayed price is an indicative bid/ask midpoint and
+may differ from an executable broker quote.
 
 OpenIBKR uses short-lived authenticated HTTPS `GET` requests for Alpaca data;
 it does not open an Alpaca WebSocket or consume the Basic plan's 30-symbol
@@ -157,19 +152,18 @@ Automated tests use Fake data and do not require or access a live IBKR account.
 
 ## Market-data behavior
 
-Market data is account- and exchange-specific. OpenIBKR does not purchase
-subscriptions or request billable regulatory snapshots. Without the necessary
-entitlements, IBKR may return delayed, frozen or unavailable quotes; the UI
-preserves that classification rather than presenting unavailable values as a
-real price.
+Alpaca is the exclusive watchlist-price source. OpenIBKR uses the Alpaca
+overnight snapshot and BOATS bars from 20:00–04:00 ET. If an overnight quote is
+missing or belongs to an older session, that symbol independently falls back to
+Alpaca delayed SIP, then IEX. At other times delayed SIP is preferred, with IEX
+as a final fallback. It never falls back to an IB Gateway quote. Historical bars
+may trail the current snapshot; OpenIBKR merges the newest Alpaca price into the
+line and continues showing current prices if history is unavailable.
 
-When optional Alpaca credentials are configured, the overnight watchlist uses
-Alpaca's overnight indicative snapshot and BOATS minute bars. Historical bars
-may trail the current quote; OpenIBKR merges the newest indicative quote into
-the line and continues showing current quotes if historical bars are
-temporarily unavailable.
-
-Trend points and minute P&L samples are retained for 24 hours. A wall-clock
+Normal trend points and minute P&L samples are retained for 24 hours. When a
+symbol falls back to delayed SIP or IEX and the 24-hour bar window is empty,
+OpenIBKR expands the search to 7 days and then 31 days, selects the latest actual
+trading day, and preserves that session for the fallback chart. A wall-clock
 cleanup runs every minute, including outside trading hours, and removed
 watchlist symbols have their local trend history discarded immediately.
 
@@ -182,8 +176,8 @@ OpenIBKR.app (SwiftUI + AppKit)
         v
 Bundled OpenIBKR Helper (Python)
         |                                      |
-        | allowlisted read-only TWS API        | allowlisted HTTPS GET only
-        | on 127.0.0.1:4003                    | (optional overnight quotes)
+        | allowlisted portfolio-only TWS API   | allowlisted HTTPS GET only
+        | on 127.0.0.1:4003                    | (all watchlist prices)
         v                                      v
 IB Gateway (Read-Only API enabled)     data.alpaca.markets
 ```
@@ -195,8 +189,7 @@ account identifiers and session tokens are excluded from that database.
 ## Current limitations
 
 - No signed or notarized public binary is currently distributed.
-- Live market-data availability depends on the user's IBKR and optional Alpaca
-  entitlements.
+- Market-data availability depends on the user's Alpaca entitlements.
 - Physical sleep/wake and IB Gateway restart behavior should be verified on the
   target Mac before relying on the dashboard for extended unattended use.
 

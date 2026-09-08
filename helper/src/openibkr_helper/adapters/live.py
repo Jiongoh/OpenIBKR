@@ -18,20 +18,16 @@ from ..config import HelperSettings
 from ..events import (
     AccountEvent,
     ConnectionEvent,
-    MarketDataTypeEvent,
     PnLEvent,
     PositionCostSlotsEvent,
     PositionEvent,
     PositionPnLEvent,
     PositionRemovedEvent,
-    QuoteEvent,
-    QuoteResetEvent,
 )
 from ..models import (
     ContractQuery,
     GatewayState,
     Instrument,
-    MarketDataKind,
     PositionCostSlot,
 )
 from .base import AdapterUnavailableError, ContractResolutionError, EventSink
@@ -41,7 +37,6 @@ logger = logging.getLogger("openibkr.ibkr")
 ACCOUNT_SUMMARY_REQUEST_ID = 7201
 PNL_REQUEST_ID = 7202
 CONTRACT_REQUEST_ID_START = 8000
-MARKET_REQUEST_ID_START = 10000
 POSITION_PNL_REQUEST_ID_START = 20000
 EXECUTION_REQUEST_ID = 7203
 
@@ -131,9 +126,7 @@ def _rebuild_cost_slots(
             continue
         match = next((item for item in grouped if item.identifier == lot.identifier), None)
         if match is None:
-            grouped.append(
-                _WorkingLot(magnitude, lot.price, lot.identifier, lot.source)
-            )
+            grouped.append(_WorkingLot(magnitude, lot.price, lot.identifier, lot.source))
         else:
             combined = match.quantity + magnitude
             if match.price is not None and lot.price is not None:
@@ -144,9 +137,7 @@ def _rebuild_cost_slots(
         (lot.quantity * lot.price for lot in grouped if lot.price is not None),
         Decimal(0),
     )
-    base_quantity = sum(
-        (lot.quantity for lot in grouped if lot.price is None), Decimal(0)
-    )
+    base_quantity = sum((lot.quantity for lot in grouped if lot.price is None), Decimal(0))
     if base_quantity > 0:
         derived = (abs(quantity) * abs(average_cost) - known_cost) / base_quantity
         base_price = derived if derived > 0 else abs(average_cost)
@@ -196,7 +187,6 @@ class _HelperIBKRClient(ReadOnlyIBKRClient):
         self._adapter = adapter
         self.selected_account: str | None = None
         self.contract_results: dict[int, list[Instrument]] = {}
-        self.market_requests: dict[int, int] = {}
         self.position_cache: dict[int, tuple[Decimal, Decimal]] = {}
         self.position_pnl_requests: dict[int, int] = {}
         self.execution_fills: dict[str, _ExecutionFill] = {}
@@ -304,9 +294,7 @@ class _HelperIBKRClient(ReadOnlyIBKRClient):
     def execDetailsEnd(self, reqId: int) -> None:  # noqa: N802
         super().execDetailsEnd(reqId)
         if reqId == EXECUTION_REQUEST_ID:
-            self._adapter._executions_complete_from_thread(
-                tuple(self.execution_fills.values())
-            )
+            self._adapter._executions_complete_from_thread(tuple(self.execution_fills.values()))
 
     def contractDetails(self, reqId: int, contractDetails: ContractDetails) -> None:  # noqa: N802
         super().contractDetails(reqId, contractDetails)
@@ -321,31 +309,6 @@ class _HelperIBKRClient(ReadOnlyIBKRClient):
         self._adapter.complete_contract_from_thread(
             reqId, tuple(self.contract_results.pop(reqId, []))
         )
-
-    def marketDataType(self, reqId: int, marketDataType: int) -> None:  # noqa: N802
-        super().marketDataType(reqId, marketDataType)
-        con_id = self.market_requests.get(reqId)
-        if con_id is not None:
-            self._emit(MarketDataTypeEvent(con_id, MarketDataKind.from_ibkr(marketDataType)))
-
-    def tickPrice(self, reqId: int, tickType: int, price: float, attrib: Any) -> None:  # noqa: N802
-        super().tickPrice(reqId, tickType, price, attrib)
-        con_id = self.market_requests.get(reqId)
-        value = _decimal(price)
-        if con_id is None or value is None or value <= 0:
-            return
-        field = {
-            1: "bid",
-            2: "ask",
-            4: "last",
-            9: "close",
-            66: "bid",
-            67: "ask",
-            68: "last",
-            75: "close",
-        }.get(int(tickType))
-        if field is not None:
-            self._emit(QuoteEvent(con_id, field, value))
 
     def error(
         self,
@@ -400,10 +363,8 @@ class LiveIBKRAdapter:
         self._stopping = False
         self._contract_futures: dict[int, asyncio.Future[tuple[Instrument, ...]]] = {}
         self._next_contract_request = CONTRACT_REQUEST_ID_START
-        self._next_market_request = MARKET_REQUEST_ID_START
         self._next_position_pnl_request = POSITION_PNL_REQUEST_ID_START
         self._instruments: dict[int, Instrument] = {}
-        self._market_request_by_con_id: dict[int, int] = {}
         self._position_pnl_request_by_con_id: dict[int, int] = {}
         self._execution_fills: tuple[_ExecutionFill, ...] = ()
         self._execution_snapshot_complete = False
@@ -464,45 +425,16 @@ class LiveIBKRAdapter:
         unique = {candidate.con_id: candidate for candidate in candidates}
         return tuple(unique[key] for key in sorted(unique))
 
-    async def subscribe_quote(self, instrument: Instrument) -> None:
+    async def subscribe_watchlist(self, instrument: Instrument) -> None:
+        """Track portfolio data for a symbol without requesting an IB quote."""
         self._instruments[instrument.con_id] = instrument
-        if instrument.con_id in self._market_request_by_con_id:
-            return
-        client = self._client
-        if client is None or not client.isConnected():
-            # Keep the desired set in memory.  The reconnect cycle restores it
-            # once the Gateway becomes available.
-            return
-        if self._sink is not None:
-            await self._sink(QuoteResetEvent(instrument.con_id))
-        request_id = self._next_market_request
-        self._next_market_request += 1
-        contract = Contract()
-        contract.conId = instrument.con_id
-        contract.symbol = instrument.symbol
-        contract.secType = instrument.sec_type
-        contract.exchange = instrument.exchange
-        contract.currency = instrument.currency
-        contract.primaryExchange = instrument.primary_exchange or ""
-        contract.localSymbol = instrument.local_symbol or ""
-        client.market_requests[request_id] = instrument.con_id
-        self._market_request_by_con_id[instrument.con_id] = request_id
-        client.reqMktData(request_id, contract, "", False, False, [])
         await self._sync_position_subscription(instrument.con_id)
 
-    async def unsubscribe_quote(self, con_id: int) -> None:
+    async def unsubscribe_watchlist(self, con_id: int) -> None:
         self._instruments.pop(con_id, None)
         await self._cancel_position_subscription(con_id)
-        request_id = self._market_request_by_con_id.pop(con_id, None)
-        client = self._client
-        if request_id is None or client is None or not client.isConnected():
-            return
-        client.cancelMktData(request_id)
-        client.market_requests.pop(request_id, None)
 
-    def position_from_thread(
-        self, con_id: int, quantity: Decimal, average_cost: Decimal
-    ) -> None:
+    def position_from_thread(self, con_id: int, quantity: Decimal, average_cost: Decimal) -> None:
         loop = self._loop
         if loop is None or loop.is_closed():
             return
@@ -528,9 +460,7 @@ class LiveIBKRAdapter:
                 await self._sink(
                     PositionCostSlotsEvent(
                         con_id,
-                        _rebuild_cost_slots(
-                            con_id, quantity, average_cost, self._execution_fills
-                        ),
+                        _rebuild_cost_slots(con_id, quantity, average_cost, self._execution_fills),
                     )
                 )
         await self._sync_position_subscription(con_id)
@@ -568,9 +498,7 @@ class LiveIBKRAdapter:
             return
         loop.call_soon_threadsafe(lambda: asyncio.create_task(sink(event)))
 
-    def _executions_complete_from_thread(
-        self, fills: tuple[_ExecutionFill, ...]
-    ) -> None:
+    def _executions_complete_from_thread(self, fills: tuple[_ExecutionFill, ...]) -> None:
         loop = self._loop
         if loop is None or loop.is_closed():
             return
@@ -578,9 +506,7 @@ class LiveIBKRAdapter:
             lambda: asyncio.create_task(self._apply_execution_snapshot(fills))
         )
 
-    async def _apply_execution_snapshot(
-        self, fills: tuple[_ExecutionFill, ...]
-    ) -> None:
+    async def _apply_execution_snapshot(self, fills: tuple[_ExecutionFill, ...]) -> None:
         self._execution_fills = fills
         self._execution_snapshot_complete = True
         client, sink = self._client, self._sink
@@ -675,13 +601,11 @@ class LiveIBKRAdapter:
         execution_filter = ExecutionFilter()
         execution_filter.acctCode = client.selected_account
         client.reqExecutions(EXECUTION_REQUEST_ID, execution_filter)
-        client.reqMarketDataType(3)
         logger.info("gateway_connected server_version=%s", client.serverVersion())
         old_instruments = tuple(self._instruments.values())
-        self._market_request_by_con_id.clear()
         self._position_pnl_request_by_con_id.clear()
         for instrument in old_instruments:
-            await self.subscribe_quote(instrument)
+            await self.subscribe_watchlist(instrument)
 
     async def _restore_after_data_loss(self) -> None:
         client = self._client
@@ -696,12 +620,9 @@ class LiveIBKRAdapter:
         execution_filter = ExecutionFilter()
         execution_filter.acctCode = client.selected_account
         client.reqExecutions(EXECUTION_REQUEST_ID, execution_filter)
-        client.reqMarketDataType(3)
-        client.market_requests.clear()
-        self._market_request_by_con_id.clear()
         self._position_pnl_request_by_con_id.clear()
         for instrument in tuple(self._instruments.values()):
-            await self.subscribe_quote(instrument)
+            await self.subscribe_watchlist(instrument)
         if self._sink is not None:
             await self._sink(ConnectionEvent(GatewayState.CONNECTED, 1101))
 
@@ -731,15 +652,12 @@ class LiveIBKRAdapter:
         self._client = None
         self._reader_thread = None
         if client is not None and client.isConnected():
-            for request_id in tuple(self._market_request_by_con_id.values()):
-                client.cancelMktData(request_id)
             for request_id in tuple(self._position_pnl_request_by_con_id.values()):
                 client.cancelPnLSingle(request_id)
             client.cancelPositions()
             client.cancelPnL(PNL_REQUEST_ID)
             client.cancelAccountSummary(ACCOUNT_SUMMARY_REQUEST_ID)
             client.disconnect()
-        self._market_request_by_con_id.clear()
         self._position_pnl_request_by_con_id.clear()
         if reader_thread is not None:
             await asyncio.to_thread(reader_thread.join, 2.0)

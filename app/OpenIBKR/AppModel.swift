@@ -19,6 +19,7 @@ enum QuoteTrendDirection: Equatable {
 enum QuoteTrendHistory {
     static let sampleInterval: TimeInterval = 60
     static let retentionInterval: TimeInterval = 24 * 60 * 60
+    static let suppliedFallbackRetentionInterval: TimeInterval = 31 * 24 * 60 * 60
 
     static func recording(
         price: Decimal,
@@ -47,17 +48,22 @@ enum QuoteTrendHistory {
 
     static func pruned(
         _ points: [QuoteTrendPoint],
-        relativeTo date: Date
+        relativeTo date: Date,
+        retention: TimeInterval = retentionInterval
     ) -> [QuoteTrendPoint] {
-        let cutoff = date.addingTimeInterval(-retentionInterval)
+        let cutoff = date.addingTimeInterval(-retention)
         let sorted = points
             .filter { $0.sampledAt >= cutoff && $0.sampledAt <= date }
             .sorted { $0.sampledAt < $1.sampledAt }
-        return sorted.reduce(into: []) { result, point in
+        var result = sorted.reduce(into: [QuoteTrendPoint]()) { result, point in
             if result.last?.price != point.price {
                 result.append(point)
             }
         }
+        if result.count == 1, sorted.count >= 2, let last = sorted.last {
+            result.append(last)
+        }
+        return result
     }
 }
 
@@ -390,10 +396,14 @@ final class AppModel: ObservableObject {
             // status presentation, but must not discard an observed price
             // change that is already visible to the user.
             let stored = updated[quote.id] ?? []
-            let supplied = QuoteTrendHistory.pruned(quote.trend ?? [], relativeTo: now)
+            let supplied = QuoteTrendHistory.pruned(
+                quote.trend ?? [],
+                relativeTo: now,
+                retention: QuoteTrendHistory.suppliedFallbackRetentionInterval
+            )
             let current = supplied.isEmpty ? stored : supplied
             var next = current
-            if let price = quote.displayPrice?.value {
+            if supplied.isEmpty, let price = quote.displayPrice?.value {
                 let observedAt = quote.receivedAt ?? now
                 if observedAt >= cutoff, observedAt <= now {
                     next = QuoteTrendHistory.pruned(

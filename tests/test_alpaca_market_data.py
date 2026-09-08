@@ -18,8 +18,17 @@ from openibkr_helper.alpaca import (
     _trend_points,
     is_overnight_session,
 )
-from openibkr_helper.events import QuoteEvent, QuoteTrendEvent
-from openibkr_helper.models import AlpacaCredentials, Instrument, QuoteTrendPoint
+from openibkr_helper.events import (
+    MarketDataTypeEvent,
+    QuoteEvent,
+    QuoteTrendEvent,
+)
+from openibkr_helper.models import (
+    AlpacaCredentials,
+    Instrument,
+    MarketDataKind,
+    QuoteTrendPoint,
+)
 
 
 class AlpacaMarketDataTests(unittest.TestCase):
@@ -148,7 +157,6 @@ class AlpacaProviderTests(unittest.IsolatedAsyncioTestCase):
         overnight = datetime(2026, 8, 17, 1, 0, tzinfo=UTC)
 
         self.assertFalse(provider.status(overnight).active)
-        self.assertFalse(provider.should_override_quotes(overnight))
 
     async def test_configure_validates_before_returning_active_status(self) -> None:
         provider = AlpacaOvernightProvider(_HistoryUnavailableTransport())
@@ -164,7 +172,13 @@ class AlpacaProviderTests(unittest.IsolatedAsyncioTestCase):
             secret_key="secret-value-that-must-never-be-logged",
         )
 
-        with patch("openibkr_helper.alpaca.is_overnight_session", return_value=True):
+        with (
+            patch("openibkr_helper.alpaca.is_overnight_session", return_value=True),
+            patch(
+                "openibkr_helper.alpaca.utc_now",
+                return_value=datetime(2026, 8, 14, 3, 0, tzinfo=UTC),
+            ),
+        ):
             status = await provider.configure(credentials)
             self.assertTrue(status.active)
             self.assertIsNotNone(status.last_update_at)
@@ -191,7 +205,11 @@ class AlpacaProviderTests(unittest.IsolatedAsyncioTestCase):
             currency="USD",
         )
 
-        await provider._refresh()
+        with patch(
+            "openibkr_helper.alpaca.utc_now",
+            return_value=datetime(2026, 8, 14, 3, 0, tzinfo=UTC),
+        ):
+            await provider._refresh()
 
         last_events = [
             event for event in events if isinstance(event, QuoteEvent) and event.field == "last"
@@ -213,10 +231,276 @@ class AlpacaProviderTests(unittest.IsolatedAsyncioTestCase):
             currency="USD",
         )
 
-        await provider._refresh()
+        with patch(
+            "openibkr_helper.alpaca.utc_now",
+            return_value=datetime(2026, 8, 14, 3, 0, tzinfo=UTC),
+        ):
+            await provider._refresh()
 
         self.assertTrue(provider._has_fresh_data)
         self.assertIsNone(provider._last_error)
+
+    async def test_daytime_prefers_delayed_sip_for_a_basic_account(self) -> None:
+        class DayFeedTransport:
+            def __init__(self) -> None:
+                self.feeds: list[str] = []
+
+            async def get_json(self, path, query, credentials):  # noqa: ANN001, ANN201
+                self.feeds.append(query["feed"])
+                return {
+                    "snapshots": {
+                        "AAPL": {
+                            "latestTrade": {
+                                "t": "2026-08-17T14:59:58Z",
+                                "p": 100.20,
+                            }
+                        }
+                    }
+                }
+
+        transport = DayFeedTransport()
+        provider = AlpacaOvernightProvider(transport)
+        events = []
+
+        async def collect(event):  # noqa: ANN001
+            events.append(event)
+
+        provider._sink = collect
+        credentials = AlpacaCredentials(
+            key_id="PKTEST1234567890",
+            secret_key="secret-value-that-must-never-be-logged",
+        )
+        provider._instruments[1] = Instrument(
+            con_id=1,
+            symbol="AAPL",
+            sec_type="STK",
+            exchange="SMART",
+            currency="USD",
+        )
+        now = datetime(2026, 8, 17, 15, 0, tzinfo=UTC)
+
+        self.assertTrue(await provider._refresh_snapshots(credentials, now))
+
+        self.assertEqual(transport.feeds, ["delayed_sip"])
+        self.assertEqual(
+            [event.kind for event in events if isinstance(event, MarketDataTypeEvent)],
+            [MarketDataKind.DELAYED],
+        )
+        last = next(
+            event for event in events if isinstance(event, QuoteEvent) and event.field == "last"
+        )
+        self.assertEqual(last.observed_at, now)
+
+    async def test_stale_overnight_symbol_falls_back_without_affecting_others(self) -> None:
+        class MixedFeedTransport:
+            def __init__(self) -> None:
+                self.requests: list[tuple[str, str]] = []
+
+            async def get_json(self, path, query, credentials):  # noqa: ANN001, ANN201
+                self.requests.append((query["feed"], query["symbols"]))
+                if query["feed"] == "overnight":
+                    return {
+                        "snapshots": {
+                            "AAPL": {
+                                "latestQuote": {
+                                    "t": "2026-09-08T01:59:58Z",
+                                    "bp": 100.10,
+                                    "ap": 100.30,
+                                }
+                            },
+                            "RAM": {
+                                "latestQuote": {
+                                    "t": "2026-08-31T08:00:00Z",
+                                    "bp": 11.79,
+                                    "ap": 12.49,
+                                }
+                            },
+                        }
+                    }
+                return {
+                    "snapshots": {
+                        "RAM": {
+                            "latestTrade": {
+                                "t": "2026-09-05T00:00:06Z",
+                                "p": 13.82,
+                            }
+                        }
+                    }
+                }
+
+        transport = MixedFeedTransport()
+        provider = AlpacaOvernightProvider(transport)
+        events = []
+
+        async def collect(event):  # noqa: ANN001
+            events.append(event)
+
+        provider._sink = collect
+        provider._instruments[1] = Instrument(
+            con_id=1,
+            symbol="AAPL",
+            sec_type="STK",
+            exchange="SMART",
+            currency="USD",
+        )
+        provider._instruments[2] = Instrument(
+            con_id=2,
+            symbol="RAM",
+            sec_type="STK",
+            exchange="SMART",
+            currency="USD",
+        )
+        credentials = AlpacaCredentials(
+            key_id="PKTEST1234567890",
+            secret_key="secret-value-that-must-never-be-logged",
+        )
+
+        self.assertTrue(
+            await provider._refresh_snapshots(
+                credentials,
+                datetime(2026, 9, 8, 2, 0, tzinfo=UTC),
+            )
+        )
+
+        self.assertEqual(
+            transport.requests,
+            [("overnight", "AAPL,RAM"), ("delayed_sip", "RAM")],
+        )
+        self.assertEqual(
+            [event.kind for event in events if isinstance(event, MarketDataTypeEvent)],
+            [MarketDataKind.OVERNIGHT_INDICATIVE, MarketDataKind.DELAYED],
+        )
+        last_by_con_id = {
+            event.con_id: event.value
+            for event in events
+            if isinstance(event, QuoteEvent) and event.field == "last"
+        }
+        self.assertEqual(last_by_con_id, {1: Decimal("100.20"), 2: Decimal("13.82")})
+
+    async def test_iex_is_used_only_when_delayed_sip_has_no_quote(self) -> None:
+        class IEXFallbackTransport:
+            def __init__(self) -> None:
+                self.feeds: list[str] = []
+
+            async def get_json(self, path, query, credentials):  # noqa: ANN001, ANN201
+                self.feeds.append(query["feed"])
+                if query["feed"] == "delayed_sip":
+                    return {"snapshots": {}}
+                return {
+                    "snapshots": {
+                        "AAPL": {
+                            "latestTrade": {
+                                "t": "2026-08-17T14:59:58Z",
+                                "p": 100.20,
+                            }
+                        }
+                    }
+                }
+
+        transport = IEXFallbackTransport()
+        provider = AlpacaOvernightProvider(transport)
+        events = []
+
+        async def collect(event):  # noqa: ANN001
+            events.append(event)
+
+        provider._sink = collect
+        provider._instruments[1] = Instrument(
+            con_id=1,
+            symbol="AAPL",
+            sec_type="STK",
+            exchange="SMART",
+            currency="USD",
+        )
+        credentials = AlpacaCredentials(
+            key_id="PKTEST1234567890",
+            secret_key="secret-value-that-must-never-be-logged",
+        )
+
+        self.assertTrue(
+            await provider._refresh_snapshots(
+                credentials,
+                datetime(2026, 8, 17, 15, 0, tzinfo=UTC),
+            )
+        )
+
+        self.assertEqual(transport.feeds, ["delayed_sip", "iex"])
+        self.assertEqual(
+            [event.kind for event in events if isinstance(event, MarketDataTypeEvent)],
+            [MarketDataKind.REAL_TIME],
+        )
+
+    async def test_fallback_quote_uses_matching_history_and_latest_trading_day(self) -> None:
+        class FallbackHistoryTransport:
+            def __init__(self) -> None:
+                self.bar_requests: list[dict[str, str]] = []
+
+            async def get_json(self, path, query, credentials):  # noqa: ANN001, ANN201
+                if path == "/v2/stocks/snapshots":
+                    if query["feed"] == "overnight":
+                        return {
+                            "snapshots": {
+                                "RAM": {
+                                    "latestTrade": {
+                                        "t": "2026-08-31T08:00:00Z",
+                                        "p": 12.14,
+                                    }
+                                }
+                            }
+                        }
+                    return {
+                        "snapshots": {
+                            "RAM": {
+                                "latestTrade": {
+                                    "t": "2026-09-05T00:00:06Z",
+                                    "p": 13.82,
+                                }
+                            }
+                        }
+                    }
+
+                self.bar_requests.append(dict(query))
+                start = datetime.fromisoformat(query["start"].replace("Z", "+00:00"))
+                if start > datetime(2026, 9, 4, tzinfo=UTC):
+                    return {"bars": {"RAM": []}}
+                # Alpaca returns descending data because the provider requests the
+                # latest bars first; parsing must restore chronological order.
+                return {
+                    "bars": {
+                        "RAM": [
+                            {"t": "2026-09-04T19:59:00Z", "c": 13.82},
+                            {"t": "2026-09-04T19:58:00Z", "c": 13.75},
+                            {"t": "2026-09-03T19:59:00Z", "c": 13.10},
+                        ]
+                    }
+                }
+
+        transport = FallbackHistoryTransport()
+        provider = AlpacaOvernightProvider(transport)
+        provider._credentials = AlpacaCredentials(
+            key_id="PKTEST1234567890",
+            secret_key="secret-value-that-must-never-be-logged",
+        )
+        provider._instruments[1] = Instrument(
+            con_id=1,
+            symbol="RAM",
+            sec_type="STK",
+            exchange="SMART",
+            currency="USD",
+        )
+        now = datetime(2026, 9, 8, 2, 0, tzinfo=UTC)
+
+        with patch("openibkr_helper.alpaca.utc_now", return_value=now):
+            await provider._refresh()
+
+        self.assertEqual(provider._snapshot_feeds[1], "delayed_sip")
+        self.assertEqual([request["feed"] for request in transport.bar_requests], ["sip", "sip"])
+        self.assertTrue(all(request["sort"] == "desc" for request in transport.bar_requests))
+        self.assertGreaterEqual(len(provider._trends[1]), 2)
+        self.assertEqual(
+            {point.sampled_at.date() for point in provider._trends[1]},
+            {datetime(2026, 9, 4, tzinfo=UTC).date()},
+        )
 
     async def test_in_memory_trends_expire_without_a_new_quote(self) -> None:
         provider = AlpacaOvernightProvider(_HistoryUnavailableTransport())

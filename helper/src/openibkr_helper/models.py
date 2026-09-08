@@ -167,7 +167,7 @@ class WealthLotsStatus(ProtocolModel):
 
 
 class MarketDataStatus(ProtocolModel):
-    provider: Literal["ibkr", "alpaca_overnight"] = "ibkr"
+    provider: Literal["alpaca", "alpaca_overnight", "ibkr"] = "alpaca"
     configured: bool = False
     active: bool = False
     last_update_at: datetime | None = None

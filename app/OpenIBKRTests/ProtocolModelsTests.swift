@@ -510,6 +510,30 @@ final class ProtocolModelsTests: XCTestCase {
         XCTAssertEqual(QuoteTrendDirection.from(result), .falling)
     }
 
+    func testSuppliedFallbackTrendCanRetainTheLatestPriorTradingDay() {
+        let now = Date(timeIntervalSince1970: 1_800_100_000)
+        let priorSession = [
+            QuoteTrendPoint(
+                sampledAt: now.addingTimeInterval(-4 * 24 * 60 * 60),
+                price: DecimalString(97)
+            ),
+            QuoteTrendPoint(
+                sampledAt: now.addingTimeInterval(-4 * 24 * 60 * 60 + 60),
+                price: DecimalString(98)
+            ),
+        ]
+
+        XCTAssertTrue(QuoteTrendHistory.pruned(priorSession, relativeTo: now).isEmpty)
+        XCTAssertEqual(
+            QuoteTrendHistory.pruned(
+                priorSession,
+                relativeTo: now,
+                retention: QuoteTrendHistory.suppliedFallbackRetentionInterval
+            ).map(\.price.value),
+            [Decimal(97), Decimal(98)]
+        )
+    }
+
     func testHoverSessionUsesOneStableWidthAcrossModules() {
         let stableWidth = DashboardLayout.stableHoverWidth(
             watchlistExpanded: true,
@@ -571,6 +595,8 @@ final class ProtocolModelsTests: XCTestCase {
         XCTAssertEqual(snapshot.connection.state, .connected)
         XCTAssertEqual(snapshot.account.accountMasked, "*****TEST")
         XCTAssertEqual(snapshot.pnl.daily?.value, Decimal(string: "12.34"))
+        XCTAssertEqual(snapshot.pnl.unrealized?.value, Decimal(string: "10.01"))
+        XCTAssertEqual(snapshot.pnl.realized?.value, Decimal(string: "2.33"))
         XCTAssertNil(snapshot.positions)
     }
 
@@ -621,11 +647,15 @@ final class ProtocolModelsTests: XCTestCase {
         XCTAssertEqual(MarketDataKind.delayed.displayName, "Delayed")
         XCTAssertEqual(MarketDataKind.overnightIndicative.displayName, "Overnight Indicative")
         XCTAssertNotEqual(MarketDataKind.realTime.displayName, MarketDataKind.delayed.displayName)
+        XCTAssertEqual(MarketDataKind.realTime.compactFeedName, "IEX · LIVE")
+        XCTAssertEqual(MarketDataKind.delayed.compactFeedName, "DELAYED_SIP")
+        XCTAssertEqual(MarketDataKind.overnightIndicative.compactFeedName, "OVERNIGHT")
+        XCTAssertEqual(MarketDataKind.unknown.compactFeedName, "WAITING")
     }
 
     func testAlpacaStatusDoesNotClaimActiveBeforeSuccessfulData() {
         let configured = MarketDataStatus(
-            provider: "alpaca_overnight",
+            provider: "alpaca",
             configured: true,
             active: false,
             lastUpdateAt: nil,
@@ -637,9 +667,9 @@ final class ProtocolModelsTests: XCTestCase {
         active.active = true
         active.lastUpdateAt = Date()
 
-        XCTAssertEqual(configured.displayName, "Alpaca Overnight · Configured")
-        XCTAssertEqual(unavailable.displayName, "Alpaca Overnight · Unavailable")
-        XCTAssertEqual(active.displayName, "Alpaca Overnight · Active")
+        XCTAssertEqual(configured.displayName, "Alpaca · Configured")
+        XCTAssertEqual(unavailable.displayName, "Alpaca · Unavailable")
+        XCTAssertEqual(active.displayName, "Alpaca · Active")
     }
 
     func testDecodesAlpacaOvernightStatusAndTrend() throws {
@@ -675,7 +705,7 @@ final class ProtocolModelsTests: XCTestCase {
             "trend": [{"sampled_at": "2026-08-14T02:59:00Z", "price": "100.20"}]
           }],
           "market_data": {
-            "provider": "alpaca_overnight",
+            "provider": "alpaca",
             "configured": true,
             "active": true,
             "last_update_at": "2026-08-14T02:59:58Z",
@@ -686,7 +716,7 @@ final class ProtocolModelsTests: XCTestCase {
 
         let snapshot = try ProtocolCoding.decoder().decode(AppSnapshot.self, from: Data(json.utf8))
 
-        XCTAssertEqual(snapshot.currentMarketData.provider, "alpaca_overnight")
+        XCTAssertEqual(snapshot.currentMarketData.provider, "alpaca")
         XCTAssertTrue(snapshot.currentMarketData.active)
         XCTAssertEqual(snapshot.quotes.first?.marketDataKind, .overnightIndicative)
         XCTAssertEqual(snapshot.quotes.first?.trend?.first?.price.value, Decimal(string: "100.20"))

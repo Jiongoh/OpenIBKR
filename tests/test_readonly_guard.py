@@ -28,6 +28,11 @@ class ReadOnlyGuardTests(unittest.TestCase):
     def test_execution_history_read_is_explicitly_allowlisted(self) -> None:
         self.assertIn(OUT.REQ_EXECUTIONS, ALLOWED_OUTGOING)
 
+    def test_ib_market_data_requests_are_blocked(self) -> None:
+        self.assertNotIn(OUT.REQ_MARKET_DATA_TYPE, ALLOWED_OUTGOING)
+        self.assertNotIn(OUT.REQ_MKT_DATA, ALLOWED_OUTGOING)
+        self.assertNotIn(OUT.CANCEL_MKT_DATA, ALLOWED_OUTGOING)
+
     def test_every_known_non_allowlisted_message_fails_closed(self) -> None:
         for outgoing in OUT:
             if outgoing in ALLOWED_OUTGOING:

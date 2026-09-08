@@ -32,6 +32,17 @@ enum MarketDataKind: String, Codable {
         case .unknown: "Unknown"
         }
     }
+
+    var compactFeedName: String {
+        switch self {
+        case .realTime: "IEX · LIVE"
+        case .delayed: "DELAYED_SIP"
+        case .overnightIndicative: "OVERNIGHT"
+        case .frozen: "FROZEN"
+        case .delayedFrozen: "DELAYED_SIP · FROZEN"
+        case .unknown: "WAITING"
+        }
+    }
 }
 
 struct DecimalString: Codable, Hashable {
@@ -177,8 +188,8 @@ struct MarketDataStatus: Codable, Equatable {
     var lastUpdateAt: Date?
     var error: String?
 
-    static let ibkr = MarketDataStatus(
-        provider: "ibkr",
+    static let alpaca = MarketDataStatus(
+        provider: "alpaca",
         configured: false,
         active: false,
         lastUpdateAt: nil,
@@ -187,12 +198,12 @@ struct MarketDataStatus: Codable, Equatable {
 
     var displayName: String {
         switch provider {
-        case "alpaca_overnight":
-            if active { "Alpaca Overnight · Active" }
-            else if error != nil { "Alpaca Overnight · Unavailable" }
-            else if configured && lastUpdateAt == nil { "Alpaca Overnight · Configured" }
-            else { "Alpaca Overnight · Standby" }
-        default: "IB Gateway"
+        case "alpaca", "alpaca_overnight":
+            if active { "Alpaca · Active" }
+            else if error != nil { "Alpaca · Unavailable" }
+            else if configured && lastUpdateAt == nil { "Alpaca · Configured" }
+            else { "Alpaca · Standby" }
+        default: "Alpaca"
         }
     }
 }
@@ -237,7 +248,7 @@ struct AppSnapshot: Codable {
         return dailyPnL / netLiquidation * 100
     }
 
-    var currentMarketData: MarketDataStatus { marketData ?? .ibkr }
+    var currentMarketData: MarketDataStatus { marketData ?? .alpaca }
 
     func position(for conId: Int) -> PositionSnapshot? {
         positions?.first(where: { $0.conId == conId })

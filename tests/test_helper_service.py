@@ -11,7 +11,6 @@ from openibkr_helper.adapters.fake import FakeIBKRAdapter
 from openibkr_helper.config import HelperSettings
 from openibkr_helper.events import (
     ConnectionEvent,
-    MarketDataStatusEvent,
     MarketDataTypeEvent,
     PositionEvent,
     QuoteEvent,
@@ -22,7 +21,6 @@ from openibkr_helper.models import (
     ContractQuery,
     GatewayState,
     MarketDataKind,
-    MarketDataStatus,
     QuoteTrendPoint,
     utc_now,
 )
@@ -132,6 +130,28 @@ class HelperServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(after.last, before.last)
         self.assertEqual(after.received_at, before.received_at)
 
+    async def test_ibkr_quote_events_never_replace_alpaca_owned_prices(self) -> None:
+        instrument = await self.service.add_watchlist(ContractQuery(symbol="AAPL"))
+        await asyncio.sleep(0)
+        await self.service.handle_market_data_event(
+            MarketDataTypeEvent(instrument.con_id, MarketDataKind.REAL_TIME)
+        )
+        await self.service.handle_market_data_event(
+            QuoteEvent(instrument.con_id, "last", Decimal("321.45"))
+        )
+        self.service.settings = self.service.settings.model_copy(update={"adapter": "ibkr"})
+
+        await self.service.handle_adapter_event(
+            MarketDataTypeEvent(instrument.con_id, MarketDataKind.DELAYED)
+        )
+        await self.service.handle_adapter_event(
+            QuoteEvent(instrument.con_id, "last", Decimal("999.99"))
+        )
+
+        quote = (await self.service.snapshot()).quotes[0]
+        self.assertEqual(quote.last, Decimal("321.45"))
+        self.assertEqual(quote.market_data_kind, MarketDataKind.REAL_TIME)
+
     async def test_fresh_subscription_resets_cached_quote(self) -> None:
         instrument = await self.service.add_watchlist(ContractQuery(symbol="AAPL"))
         await asyncio.sleep(0)
@@ -146,55 +166,6 @@ class HelperServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(quote.received_at)
         self.assertTrue(quote.stale)
         self.assertEqual(quote.market_data_kind, MarketDataKind.UNKNOWN)
-
-    async def test_alpaca_to_ibkr_handoff_refreshes_quote_subscriptions(self) -> None:
-        instrument = await self.service.add_watchlist(ContractQuery(symbol="AAPL"))
-        await asyncio.sleep(0)
-        await self.service.handle_market_data_event(
-            MarketDataStatusEvent(
-                MarketDataStatus(
-                    provider="alpaca_overnight",
-                    configured=True,
-                    active=True,
-                )
-            )
-        )
-        await self.service.handle_market_data_event(
-            MarketDataTypeEvent(instrument.con_id, MarketDataKind.OVERNIGHT_INDICATIVE)
-        )
-        await self.service.handle_market_data_event(
-            QuoteEvent(instrument.con_id, "last", Decimal("999"))
-        )
-
-        await self.service.handle_market_data_event(
-            MarketDataStatusEvent(
-                MarketDataStatus(
-                    provider="alpaca_overnight",
-                    configured=True,
-                    active=False,
-                )
-            )
-        )
-        await asyncio.sleep(0)
-
-        quote = (await self.service.snapshot()).quotes[0]
-        self.assertEqual(self.adapter.unsubscribe_calls, [instrument.con_id])
-        self.assertEqual(self.adapter.subscribe_calls, [instrument.con_id, instrument.con_id])
-        self.assertEqual(quote.market_data_kind, MarketDataKind.DELAYED)
-        self.assertNotEqual(quote.last, Decimal("999"))
-        self.assertFalse(quote.stale)
-
-        # Repeated inactive status updates must not churn live subscriptions.
-        await self.service.handle_market_data_event(
-            MarketDataStatusEvent(
-                MarketDataStatus(
-                    provider="alpaca_overnight",
-                    configured=True,
-                    active=False,
-                )
-            )
-        )
-        self.assertEqual(self.adapter.unsubscribe_calls, [instrument.con_id])
 
     async def test_quote_trends_expire_against_wall_clock(self) -> None:
         instrument = await self.service.add_watchlist(ContractQuery(symbol="AAPL"))
