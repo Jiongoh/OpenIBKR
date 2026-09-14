@@ -571,7 +571,7 @@ private struct DynamicIslandView: View {
 
             Spacer(minLength: 8)
 
-            HStack(spacing: 18) {
+            HStack(spacing: 8) {
                 pnlBreakdownMetric(
                     title: "UNREALIZED",
                     value: model.snapshot.pnl.unrealized
@@ -580,26 +580,45 @@ private struct DynamicIslandView: View {
                     title: "REALIZED",
                     value: model.snapshot.pnl.realized
                 )
+                pnlBreakdownMetric(
+                    title: "TOTAL NAV",
+                    value: model.snapshot.account.netLiquidation,
+                    neutral: true
+                )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private func pnlBreakdownMetric(title: String, value: DecimalString?) -> some View {
+    private func pnlBreakdownMetric(
+        title: String,
+        value: DecimalString?,
+        neutral: Bool = false
+    ) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title)
-                .font(.system(size: 8, weight: .medium, design: .rounded))
-                .tracking(0.7)
+                .font(.system(size: 7, weight: .medium, design: .rounded))
+                .tracking(0.55)
                 .foregroundStyle(Color.white.opacity(0.34))
 
-            Text(dailyPnLAmountText(value, currency: model.snapshot.account.currency))
-                .font(.system(size: 11, weight: .semibold, design: .rounded))
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-                .foregroundStyle(pnlDirectionColor(value))
+            Text(
+                neutral
+                    ? money(value, currency: model.snapshot.account.currency)
+                    : dailyPnLAmountText(value, currency: model.snapshot.account.currency)
+            )
+            .font(.system(size: 10, weight: .semibold, design: .rounded))
+            .monospacedDigit()
+            .lineLimit(1)
+            .minimumScaleFactor(0.55)
+            .allowsTightening(true)
+            .foregroundStyle(
+                neutral
+                    ? Color.white.opacity(model.snapshot.account.stale ? 0.34 : 0.72)
+                    : pnlDirectionColor(value)
+            )
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .help(neutral ? "Current IB Gateway Net Liquidation Value" : title.capitalized)
     }
 
     private var watchlist: some View {
