@@ -24,6 +24,26 @@ final class ProtocolModelsTests: XCTestCase {
         XCTAssertFalse(window.isMovable)
         XCTAssertFalse(window.isMovableByWindowBackground)
         XCTAssertFalse(window.styleMask.contains(.resizable))
+        XCTAssertTrue(window.collectionBehavior.contains(.stationary))
+    }
+
+    @MainActor
+    func testSystemTransitionRestoresTopAnchorWithoutClippingBackingSurface() throws {
+        let controller = FloatingPanelController(model: AppModel())
+        let window = try XCTUnwrap(controller.window)
+        let screen = try XCTUnwrap(window.screen ?? NSScreen.main)
+        let size = DashboardLayout.contentSize(expanded: true)
+        window.setFrame(
+            NSRect(x: screen.frame.midX - size.width / 2,
+                   y: screen.frame.minY, width: size.width, height: size.height),
+            display: false
+        )
+
+        controller.refreshAfterSystemTransition()
+
+        XCTAssertEqual(window.frame.maxY, screen.frame.maxY, accuracy: 0.5)
+        XCTAssertEqual(window.frame.midX, screen.frame.midX, accuracy: 0.5)
+        XCTAssertEqual(window.frame.height, size.height, accuracy: 0.5)
     }
 
     @MainActor

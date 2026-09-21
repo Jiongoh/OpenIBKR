@@ -35,7 +35,10 @@ final class FloatingPanelController: NSWindowController {
         // the panel becomes effectively invisible when its top edge overlaps
         // that area.
         panel.level = .statusBar
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        // Show Desktop is a WindowServer transition, not a user drag.
+        // Exclude the drawer from Exposé movement so its visible surface and
+        // AppKit pointer coordinates stay aligned.
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.isReleasedWhenClosed = false
         super.init(window: panel)
 
@@ -82,9 +85,7 @@ final class FloatingPanelController: NSWindowController {
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 
     func show() {
-        if !isExpanded {
-            snapCollapsedToTopCenter()
-        }
+        restoreTopAnchor()
         window?.orderFrontRegardless()
         refreshHostingSurface()
     }
@@ -95,10 +96,15 @@ final class FloatingPanelController: NSWindowController {
     }
 
     func refreshAfterSystemTransition() {
-        if !isExpanded {
-            snapCollapsedToTopCenter()
-        }
+        restoreTopAnchor()
         refreshHostingSurface()
+    }
+
+    private func restoreTopAnchor() {
+        guard let panel = window else { return }
+        // Preserve the current height, including the collapse animation's
+        // temporary full-height backing surface.
+        applyVisibleContentSize(targetFrameSize: panel.frame.size)
     }
 
     private func setVisibleContentSize(_ contentSize: CGSize) {
@@ -136,18 +142,10 @@ final class FloatingPanelController: NSWindowController {
 
     private func applyVisibleContentSize(targetFrameSize: NSSize) {
         guard let panel = window else { return }
-        let targetFrame: NSRect
-        if isExpanded {
-            targetFrame = Self.frameKeepingTopCenter(
-                panel.frame,
-                targetSize: targetFrameSize
-            )
-        } else {
-            targetFrame = frameKeepingTopCenterOfVisibleScreen(
-                panel: panel,
-                targetSize: targetFrameSize
-            )
-        }
+        let targetFrame = frameKeepingTopCenterOfVisibleScreen(
+            panel: panel,
+            targetSize: targetFrameSize
+        )
 
         // Keep the top-center axis fixed while SwiftUI animates the surface
         // from the compact island's center. This preserves the downward

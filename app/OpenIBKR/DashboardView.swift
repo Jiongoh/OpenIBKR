@@ -2110,7 +2110,7 @@ private struct PositionPopupHost: NSViewRepresentable {
             panel.isFloatingPanel = true
             panel.isMovable = false
             panel.isMovableByWindowBackground = false
-            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
             panel.contentView = hostingView
             self.panel = panel
             return panel
